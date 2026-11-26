@@ -3186,6 +3186,90 @@ SQL);
         $this->assertSame(1, DB::table('enterprise_inventory_ownership_rule_revisions')->count());
     }
 
+    public function test_review_rechecks_supplier_revoked_after_conflict_query_in_ar_and_en(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        $role = Role::query()->where('code', 'SUPER_ADMIN')->firstOrFail();
+        $service = app(InventoryOwnershipRuleService::class);
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $stock = $this->stock('LATE-POLICY-'.strtoupper($locale));
+            DB::table('enterprise_store_scopes')->insert([
+                'store_id' => $stock['store_id'],
+                'business_unit_id' => DB::table('enterprise_business_units')->value('id'),
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            $maker = User::query()->create([
+                'name' => 'Late policy maker',
+                'email' => 'p110-late-maker-'.$locale.'@example.test',
+                'password' => 'password',
+                'is_active' => true,
+            ]);
+            $checker = User::query()->create([
+                'name' => 'Late policy checker',
+                'email' => 'p110-late-checker-'.$locale.'@example.test',
+                'password' => 'password',
+                'is_active' => true,
+            ]);
+            foreach ([$maker, $checker] as $user) {
+                DB::table('role_user')->insert(['user_id' => $user->id, 'role_id' => $role->id]);
+            }
+            $supplierId = $this->supplier($stock['store_id']);
+            $draft = $service->propose($maker, [
+                'store_id' => $stock['store_id'],
+                'channel' => 'B2C',
+                'supplier_id' => $supplierId,
+                'initial_owner_kind' => 'SUPPLIER',
+                'title_transfer_trigger' => 'CONTRACT_EVENT',
+                'required_evidence_classes' => ['SIGNED_CONTRACT'],
+                'checker_permission' => 'inventory_ownership_rules.review',
+                'effective_at' => now()->addDay()->startOfDay()->toDateTimeString(),
+                'request_uuid' => (string) Str::uuid(),
+            ]);
+            $auditBefore = DB::table('audit_logs')->count();
+            $armed = true;
+            $revoked = false;
+            // Deterministic same-connection revocation after the competing-rule
+            // SELECT, *after* preflight reference validation, before approval.
+            DB::listen(static function ($query) use (&$armed, &$revoked, $supplierId): void {
+                if (! $armed || $revoked) {
+                    return;
+                }
+                $sql = strtolower(ltrim((string) $query->sql));
+                if (! str_starts_with($sql, 'select')
+                    || ! str_contains($sql, 'enterprise_inventory_ownership_rule_revisions')
+                    || ! str_contains($sql, 'rule_uuid')
+                    || ! str_contains($sql, 'exists')) {
+                    return;
+                }
+                $revoked = true;
+                DB::table('enterprise_suppliers')->where('id', $supplierId)
+                    ->update(['status' => 'inactive']);
+            });
+            try {
+                $service->review($checker, (int) $draft->id, true);
+                $this->fail('Late supplier revocation must deny legal-title policy approval.');
+            } catch (HttpException $exception) {
+                $this->assertSame(409, $exception->getStatusCode());
+            } finally {
+                $armed = false;
+            }
+            $this->assertTrue($revoked, 'Expected supplier revocation after conflict SELECT.');
+            $this->assertDatabaseHas('enterprise_inventory_ownership_rule_revisions', [
+                'id' => $draft->id, 'status' => 'DRAFT', 'reviewed_by' => null,
+            ]);
+            $this->assertDatabaseHas('enterprise_suppliers', [
+                'id' => $supplierId, 'status' => 'active',
+            ]);
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $approved = $service->review($checker, (int) $draft->id, true);
+            $this->assertSame('APPROVED_RULE', $approved->status);
+            $this->assertSame($checker->id, (int) $approved->reviewed_by);
+        }
+    }
+
     public function test_owner_rule_review_and_advisory_fail_closed_after_reference_revocation(): void
     {
         $this->seed(CoreReferenceSeeder::class);

@@ -201,6 +201,9 @@ final class InventoryOwnershipRuleService
             // Scope/reference/conflict checks are not a perpetual checker
             // grant. Rebind the original persisted user just before approval.
             $this->authorize($checker, (int) $rule->store_id, (string) $rule->checker_permission);
+            // Conflict/lock reads do not lease a supplier, warehouse or legal
+            // company. Check their live scope at the actual approval boundary.
+            $this->assertCurrentReviewScope($rule, $approve);
             DB::table('enterprise_inventory_ownership_rule_revisions')->where('id', $revisionId)->update([
                 'status' => $target,
                 'reviewed_by' => (int) $checker->id,
@@ -213,9 +216,21 @@ final class InventoryOwnershipRuleService
             // Revoke even after the database UPDATE/SELECT; throwing here
             // rolls back the entire policy decision transaction.
             $this->authorize($checker, (int) $rule->store_id, (string) $rule->checker_permission);
+            $this->assertCurrentReviewScope($rule, $approve);
 
             return $reviewed;
         });
+    }
+
+    /** A locked policy is not a lease on its mutable legal-title references. */
+    private function assertCurrentReviewScope(object $rule, bool $approve): void
+    {
+        $storeId = (int) $rule->store_id;
+        abort_unless((int) $rule->company_id === $this->companyForStore($storeId), 409);
+        $this->assertChannel($storeId, (string) $rule->channel);
+        if ($approve) {
+            abort_unless($this->referencesStillValid($rule), 409);
+        }
     }
 
     /**
