@@ -107,7 +107,10 @@ final class SupplierDirectory
         $data = $this->validatedSupplier($attributes);
         $this->assertCodeAvailable($scope, (string) $data['code']);
 
-        return DB::transaction(function () use ($actor, $scope, $data): EnterpriseSupplier {
+        return DB::transaction(function () use ($actor, $context, $scope, $data): EnterpriseSupplier {
+            // Code uniqueness is only a preflight. The live actor may be
+            // disabled or lose MANAGE before the supplier and audit are written.
+            $this->authorizePersistedManage($actor, $context);
             $supplier = EnterpriseSupplier::query()->create([
                 ...$data,
                 'organization_id' => $scope->organizationId,
@@ -144,10 +147,13 @@ final class SupplierDirectory
             $this->assertCodeAvailable($scope, (string) $data['code'], $supplier->id);
         }
 
-        return DB::transaction(function () use ($actor, $scope, $supplier, $data): EnterpriseSupplier {
+        return DB::transaction(function () use ($actor, $context, $scope, $supplier, $data): EnterpriseSupplier {
             /** @var EnterpriseSupplier $locked */
             $locked = EnterpriseSupplier::query()->whereKey($supplier->id)->lockForUpdate()->firstOrFail();
             abort_unless($this->isVisible($locked, $scope), 404);
+            // Do not allow a revoked writer to update, archive, or replay a
+            // no-op after the supplier's current row was locked.
+            $this->authorizePersistedManage($actor, $context);
 
             $before = $locked->toArray();
             if (isset($data['scope_type'])) {
@@ -211,14 +217,8 @@ final class SupplierDirectory
                 ->firstOrFail();
             abort_unless($this->isVisible($lockedSupplier, $scope), 404);
 
-            // A permission DENY or offboarding can occur after the initial
-            // manage check or during the supplier lock. Never trust an Eloquent
-            // User whose in-memory has_permission_overrides flag is stale.
-            // Validate original identity before refreshing its live grants.
-            $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
-            $persistedActor = $actor->fresh();
-            abort_unless($persistedActor !== null, 403);
-            $this->authorizedScope($persistedActor, $context, self::MANAGE_PERMISSION);
+            // Live persisted manage authority also protects create/edit/archive.
+            $this->authorizePersistedManage($actor, $context);
 
             $document = $lockedSupplier->documents()->create([
                 ...$data,
@@ -332,6 +332,19 @@ final class SupplierDirectory
             ],
             'contracts' => $contracts,
         ];
+    }
+
+    private function authorizePersistedManage(User $actor, ResolvedTenantContext $context): void
+    {
+        // First validate the caller's ORIGINAL persisted identity. Fresh()
+        // alone must never turn a dirty/forged in-memory key into a new actor.
+        $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+
+        // RBAC grants and the has_permission_overrides flag can change after
+        // the first preflight. Only current DB state can authorize a write.
+        $persistedActor = $actor->fresh();
+        abort_unless($persistedActor !== null, 403);
+        $this->authorizedScope($persistedActor, $context, self::MANAGE_PERMISSION);
     }
 
     private function authorizedScope(

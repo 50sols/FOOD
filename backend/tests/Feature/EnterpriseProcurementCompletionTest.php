@@ -1134,6 +1134,139 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_supplier_create_update_and_archive_recheck_live_manage_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser(
+            $this->allPermissions(), 'P135-SUP-WRITE-LIVE-MANAGE',
+        );
+        $directory = app(SupplierDirectory::class);
+        $permissionId = Permission::query()
+            ->where('code', 'procurement.suppliers.manage')->firstOrFail()->id;
+        $baseTransactionLevel = DB::transactionLevel();
+        $armed = false;
+        $injected = false;
+        $phase = '';
+
+        // A deterministic same-connection SQL seam tests revoked grants
+        // after create's code preflight, or after update/archive's row lock.
+        // It does NOT stand in for independent concurrent DB sessions.
+        DB::listen(static function ($query) use (
+            &$armed, &$injected, &$phase, $actor, $permissionId, $baseTransactionLevel
+        ): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $injected || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_suppliers')) {
+                return;
+            }
+
+            $inTransaction = DB::transactionLevel() > $baseTransactionLevel;
+            if (($phase === 'preflight' && $inTransaction)
+                || ($phase === 'locked' && ! $inTransaction)) {
+                return;
+            }
+
+            $armed = false;
+            $injected = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $code = 'P135-SUP-LATE-'.strtoupper($locale);
+            $attributes = [
+                'scope_type' => 'store',
+                'code' => $code,
+                'name_en' => 'Supplier live writer '.$locale,
+            ];
+            $beforeSuppliers = DB::table('enterprise_suppliers')->count();
+            $beforeAudit = DB::table('audit_logs')->count();
+            $phase = 'preflight';
+            $injected = false;
+            $armed = true;
+
+            try {
+                $directory->create($actor, $context, $attributes);
+                $this->fail('Persisted MANAGE DENY after supplier code preflight must stop creation.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            } finally {
+                $armed = false;
+            }
+
+            $this->assertTrue($injected, 'Code availability SELECT must trigger the preflight DENY.');
+            $this->assertSame($beforeSuppliers, DB::table('enterprise_suppliers')->count());
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+            $this->assertTrue((bool) $actor->fresh()->has_permission_overrides);
+            $this->assertFalse((bool) $actor->has_permission_overrides);
+
+            // This first DENY occurs before the write transaction and is
+            // intentionally persistent until the fixture explicitly clears it.
+            DB::table('user_permission_overrides')
+                ->where('user_id', $actor->id)->where('permission_id', $permissionId)->delete();
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => false]);
+
+            $supplier = $directory->create($actor, $context, $attributes);
+            $this->assertSame($beforeSuppliers + 1, DB::table('enterprise_suppliers')->count());
+
+            $assertLockedDeny = function (callable $write) use (
+                &$armed, &$injected, &$phase, $actor, $permissionId
+            ): void {
+                $beforeAudit = DB::table('audit_logs')->count();
+                $phase = 'locked';
+                $injected = false;
+                $armed = true;
+                try {
+                    $write();
+                    $this->fail('Manage DENY after supplier row lock must abort mutation.');
+                } catch (HttpException $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                } finally {
+                    $armed = false;
+                }
+                $this->assertTrue($injected, 'Locked supplier SELECT must trigger DENY.');
+                // This DENY occurs inside the save transaction, so rollback
+                // must remove the override and preserve the actor's flag.
+                $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+                $this->assertSame(0, DB::table('user_permission_overrides')
+                    ->where('user_id', $actor->id)->where('permission_id', $permissionId)->count());
+                $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+            };
+
+            $assertLockedDeny(static function () use ($directory, $actor, $context, $supplier): void {
+                $directory->update($actor, $context, $supplier->id, ['name_en' => 'UNAUTHORIZED']);
+            });
+            $this->assertDatabaseHas('enterprise_suppliers', [
+                'id' => $supplier->id, 'name_en' => $attributes['name_en'],
+            ]);
+            $updated = $directory->update($actor, $context, $supplier->id, [
+                'name_en' => 'Authorized '.$locale,
+            ]);
+            $this->assertSame('Authorized '.$locale, $updated->name_en);
+
+            $assertLockedDeny(static function () use ($directory, $actor, $context, $supplier): void {
+                $directory->archive($actor, $context, $supplier->id);
+            });
+            $this->assertDatabaseHas('enterprise_suppliers', [
+                'id' => $supplier->id, 'status' => 'active',
+            ]);
+            $this->assertSame('inactive', $directory->archive(
+                $actor, $context, $supplier->id,
+            )->status);
+        }
+    }
+
     public function test_supplier_document_registration_denies_manage_revocation_after_supplier_lock_in_ar_and_en(): void
     {
         $this->enableProcurement();
