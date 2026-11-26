@@ -504,6 +504,58 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                         (output_dir / ".FOODEX-Update.publish.lock").exists()
                     )
 
+    def test_update_release_group_embedded_version_matches_manifest_target(self) -> None:
+        # Entire ZIP/manifest/file-list/SHA256 sidecar groups agree with each
+        # other. A different embedded VERSION must still fail before publish.
+        versions = (
+            ("canonical", b"1.0.127", True),
+            ("lf", b"1.0.127\n", True),
+            ("crlf", b"1.0.127\r\n", True),
+            ("older", b"1.0.126\n", False),
+            ("newer", b"1.0.128\n", False),
+            ("blank", b"", False),
+            ("extra_line", b"1.0.127\n1.0.128", False),
+            ("oversized", b"1.0.127" + b" " * 130, False),
+        )
+        for variant, embedded, allowed in versions:
+            with self.subTest(variant=variant):
+                with tempfile.TemporaryDirectory() as directory:
+                    output_dir = Path(directory)
+                    staged, originals = self._staged_release_fixture(output_dir)
+                    binary = io.BytesIO()
+                    with zipfile.ZipFile(binary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                        archive.writestr("backend/artisan", b"<?php // reviewed artisan")
+                        archive.writestr("VERSION", embedded)
+                    zipped = binary.getvalue()
+                    digest = hashlib.sha256(zipped).hexdigest()
+                    manifest = json.loads(originals["FOODEX-Update.json"])
+                    manifest["sha256"] = digest
+                    manifest["delta"]["file_count"] = 2
+                    manifest["delta"]["source_file_count"] = 2
+                    contents = dict(originals)
+                    contents["FOODEX-Update.json"] = (json.dumps(manifest) + "\n").encode("utf-8")
+                    contents["FOODEX-Update.files.txt"] = b"backend/artisan\nVERSION\n"
+                    contents["FOODEX-Update.sha256.txt"] = (
+                        f"{digest}  FOODEX-Update.zip\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.zip"] = zipped
+                    for name, body in contents.items():
+                        (staged / name).write_bytes(body)
+
+                    if allowed:
+                        builder.publish_release_bundle(staged, output_dir)
+                        for name, body in contents.items():
+                            self.assertEqual((output_dir / name).read_bytes(), body)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "embedded VERSION"):
+                            builder.publish_release_bundle(staged, output_dir)
+                        for name, body in contents.items():
+                            self.assertFalse(os.path.lexists(output_dir / name), name)
+                            self.assertEqual((staged / name).read_bytes(), body)
+                    self.assertFalse(
+                        (output_dir / ".FOODEX-Update.publish.lock").exists()
+                    )
+
     def test_update_release_group_binds_migration_manifest_to_actual_zip_members(self) -> None:
         # An attacker can replace the manifest, ZIP and both sidecars as a
         # coherent group. Only actual migration member names, not file count

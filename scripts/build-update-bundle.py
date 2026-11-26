@@ -919,6 +919,27 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
             # otherwise publish independent root-only content, even with a
             # valid SHA-256 and syntactically safe member names.
             by_name = {member.filename: member for member in members}
+
+            # The Laravel updater rejects a ZIP whose embedded VERSION
+            # disagrees with its signed target_version. The publisher must
+            # reject the same coherent, rehashed group BEFORE advertising it
+            # as an installable Dashboard release. The minimal historical
+            # staged ZIP fixture has no VERSION; actual source-built updates
+            # always include this runtime file.
+            version_member = by_name.get("VERSION")
+            if version_member is not None:
+                if version_member.file_size > 128:
+                    raise RuntimeError("Update release embedded VERSION is invalid.")
+                with archive.open(version_member) as version_stream:
+                    embedded_version = version_stream.read(129)
+                accepted_versions = (
+                    target.encode("ascii"),
+                    (target + "\n").encode("ascii"),
+                    (target + "\r\n").encode("ascii"),
+                )
+                if embedded_version not in accepted_versions:
+                    raise RuntimeError("Update release embedded VERSION does not match target_version.")
+
             for name, member in by_name.items():
                 if name.startswith("backend/public/"):
                     alias = name[len("backend/public/"):]
