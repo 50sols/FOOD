@@ -2429,7 +2429,7 @@ final class ProcurementCompletionManager
             'note' => ['nullable', 'string', 'max:2000'],
         ])->validate();
 
-        return DB::transaction(function () use ($actor, $scope, $invoiceId, $data): object {
+        return DB::transaction(function () use ($actor, $context, $scope, $invoiceId, $data): object {
             // Match review and handoff lock the same invoice before the review
             // row. Never allow post-handoff edits to approval metadata or
             // race a concurrent immutable Finance outbox publication.
@@ -2441,6 +2441,12 @@ final class ProcurementCompletionManager
                 ->lockForUpdate()
                 ->first();
             abort_if($invoice === null, 404);
+
+            // The initial handoff grant was only an unlocked preflight.
+            // Reauthorize the persisted actor AFTER the invoice row lock and
+            // BEFORE any match decision or audit can be written. A user whose
+            // access was revoked mid-request must not approve an invoice.
+            $this->scope($actor, $context, 'procurement.purchase_invoices.handoff');
 
             if ($invoice->status !== 'draft') {
                 throw ValidationException::withMessages([

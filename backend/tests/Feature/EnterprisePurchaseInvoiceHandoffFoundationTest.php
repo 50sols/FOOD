@@ -1899,6 +1899,107 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
         ]);
     }
 
+    public function test_three_way_match_review_rechecks_persisted_handoff_deny_inside_invoice_transaction_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        $completion = app(ProcurementCompletionManager::class);
+        $invoiceManager = app(PurchaseInvoiceHandoffManager::class);
+        $permissionId = Permission::query()
+            ->where('code', 'procurement.purchase_invoices.handoff')->firstOrFail()->id;
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            [$actor, $store, $context] = $this->scopedUser(
+                $this->allPermissions(), 'PINV-LATE-MATCH-'.strtoupper($locale),
+            );
+            [, $warehouse] = $this->stockTarget($store, 'PINV-LATE-MATCH-SKU-'.strtoupper($locale));
+            $receipt = $this->postedReceipt(
+                $actor, $context, $warehouse,
+                'PINV-LATE-MATCH-SUP-'.strtoupper($locale),
+                'PINV-LATE-MATCH-SKU-'.strtoupper($locale), 2,
+            );
+            $invoice = $invoiceManager->createFromPostedReceipt($actor, $context, $receipt->id, [
+                'supplier_invoice_number' => 'PINV-LATE-MATCH-'.strtoupper($locale),
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                    'quantity' => 2,
+                    'unit_price' => 1.500,
+                ]],
+            ]);
+            $this->assertDatabaseHas('enterprise_procurement_match_reviews', [
+                'purchase_invoice_id' => $invoice->id,
+                'status' => 'pending',
+            ]);
+
+            $auditBefore = DB::table('audit_logs')->count();
+            $baseTransactionLevel = DB::transactionLevel();
+            $race = (object) ['armed' => true, 'injected' => false];
+
+            // Interleave a persisted DENY just after the real invoice SELECT
+            // inside the locked review transaction. Each locale owns a distinct
+            // state object; this is not a two-session concurrency claim.
+            DB::listen(static function ($query) use (
+                $race, $actor, $permissionId, $baseTransactionLevel
+            ): void {
+                $sql = strtolower(ltrim((string) $query->sql));
+                if (! $race->armed || $race->injected
+                    || DB::transactionLevel() <= $baseTransactionLevel
+                    || ! str_starts_with($sql, 'select')
+                    || ! str_contains($sql, 'enterprise_purchase_invoices')) {
+                    return;
+                }
+
+                $race->armed = false;
+                $race->injected = true;
+                DB::table('user_permission_overrides')->insert([
+                    'user_id' => $actor->id,
+                    'permission_id' => $permissionId,
+                    'scope_key' => 'global',
+                    'store_id' => null,
+                    'effect' => 'deny',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                DB::table('users')->where('id', $actor->id)
+                    ->update(['has_permission_overrides' => true]);
+            });
+
+            try {
+                $completion->reviewMatch($actor, $context, $invoice->id, [
+                    'decision' => 'approve',
+                    'note' => 'Must not be approved on a revoked grant.',
+                ]);
+                $this->fail('A persisted mid-transaction HANDOFF DENY must refuse three-way match approval.');
+            } catch (HttpExceptionInterface $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            $this->assertTrue($race->injected, 'The invoice-locked SELECT must trigger the DENY.');
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            $this->assertDatabaseHas('enterprise_procurement_match_reviews', [
+                'purchase_invoice_id' => $invoice->id,
+                'status' => 'pending',
+                'reviewed_by' => null,
+            ]);
+            $this->assertSame(0, DB::table('user_permission_overrides')
+                ->where('user_id', $actor->id)
+                ->where('permission_id', $permissionId)->count());
+            $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+
+            // A restored, genuinely authorized actor may still approve the
+            // same pending invoice through the normal production path.
+            $approved = $completion->reviewMatch($actor, $context, $invoice->id, [
+                'decision' => 'approve',
+                'note' => 'Authorized reviewer after rolled-back DENY.',
+            ]);
+            $this->assertSame('approved', $approved->status);
+            $this->assertDatabaseHas('audit_logs', [
+                'event' => 'enterprise.procurement.three_way_match.reviewed',
+            ]);
+        }
+    }
+
     public function test_purchase_invoice_migration_is_reversible(): void
     {
         $migration = require database_path(
