@@ -1134,6 +1134,92 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_supplier_document_registration_denies_manage_revocation_after_supplier_lock_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser(
+            $this->allPermissions(), 'P135-SUP-DOC-LATE-DENY',
+        );
+        $directory = app(SupplierDirectory::class);
+        $permissionId = Permission::query()
+            ->where('code', 'procurement.suppliers.manage')->firstOrFail()->id;
+        $armed = false;
+        $injected = false;
+        $targetId = null;
+        $baselineTransactionLevel = DB::transactionLevel();
+
+        // Inject a real persisted DENY after the supplier's row-locked SELECT
+        // while its registration transaction is still open. One connection
+        // deterministically tests the late-grant seam, not cross-DB-session
+        // concurrency behavior.
+        DB::listen(static function ($query) use (
+            &$armed, &$injected, &$targetId, $actor, $permissionId, $baselineTransactionLevel
+        ): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $injected || $targetId === null
+                || DB::transactionLevel() <= $baselineTransactionLevel
+                || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_suppliers')) {
+                return;
+            }
+
+            $armed = false;
+            $injected = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $actor->id,
+                'permission_id' => $permissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $actor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'P135-SUP-DOC-DENY-'.strtoupper($locale),
+                'name_en' => 'Live supplier document '.$locale,
+            ]);
+            $targetId = (int) $supplier->id;
+            $beforeDocuments = DB::table('enterprise_supplier_documents')->count();
+            $beforeAudit = DB::table('audit_logs')->count();
+            $injected = false;
+            $armed = true;
+
+            try {
+                $directory->registerDocument($actor, $context, $targetId, [
+                    'category' => 'registration',
+                    'title' => 'Refuse stale grant '.$locale,
+                ]);
+                $this->fail('A persisted supplier-manage DENY after the lock must abort registration.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            } finally {
+                $armed = false;
+            }
+
+            $this->assertTrue($injected, 'The supplier-locked SELECT must trigger the late DENY.');
+            $this->assertFalse((bool) $actor->fresh()->has_permission_overrides);
+            $this->assertSame(0, DB::table('user_permission_overrides')
+                ->where('user_id', $actor->id)->where('permission_id', $permissionId)->count());
+            $this->assertSame($beforeDocuments, DB::table('enterprise_supplier_documents')->count());
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+
+            $registered = $directory->registerDocument($actor, $context, $targetId, [
+                'category' => 'registration',
+                'title' => 'Authorized supplier document '.$locale,
+            ]);
+            $this->assertSame((int) $supplier->id, (int) $registered->supplier_id);
+            $this->assertSame($beforeDocuments + 1, DB::table('enterprise_supplier_documents')->count());
+            $this->assertSame($beforeAudit + 1, DB::table('audit_logs')->count());
+        }
+    }
+
     public function test_supplier_governance_rechecks_module_shutdown_after_preflight_in_ar_and_en(): void
     {
         $this->enableProcurement();

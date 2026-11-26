@@ -201,7 +201,7 @@ final class SupplierDirectory
             'expires_at' => ['nullable', 'date'],
         ])->validate();
 
-        return DB::transaction(function () use ($actor, $scope, $supplierId, $data): EnterpriseSupplierDocument {
+        return DB::transaction(function () use ($actor, $context, $scope, $supplierId, $data): EnterpriseSupplierDocument {
             // The preflight visibility check is not an authorization lease.
             // Lock the current persisted supplier and recheck store ownership
             // before attaching a document or recording a success audit.
@@ -210,6 +210,15 @@ final class SupplierDirectory
                 ->lockForUpdate()
                 ->firstOrFail();
             abort_unless($this->isVisible($lockedSupplier, $scope), 404);
+
+            // A permission DENY or offboarding can occur after the initial
+            // manage check or during the supplier lock. Never trust an Eloquent
+            // User whose in-memory has_permission_overrides flag is stale.
+            // Validate original identity before refreshing its live grants.
+            $this->authorizedScope($actor, $context, self::MANAGE_PERMISSION);
+            $persistedActor = $actor->fresh();
+            abort_unless($persistedActor !== null, 403);
+            $this->authorizedScope($persistedActor, $context, self::MANAGE_PERMISSION);
 
             $document = $lockedSupplier->documents()->create([
                 ...$data,
