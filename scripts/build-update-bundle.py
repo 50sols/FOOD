@@ -952,6 +952,13 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
             # in the end-of-central-directory record.
             if archive.comment:
                 raise RuntimeError("Undeclared Update release ZIP archive comment.")
+            # Python's ZIP reader tolerates self-extracting/polyglot prefixes
+            # and shifts central-directory member offsets to skip them. The
+            # canonical first-party builder writes its first member at byte 0.
+            # Reject unlisted leading bytes even if the manifest and digest
+            # were coherently replaced and every declared member still reads.
+            if not members or min(member.header_offset for member in members) != 0:
+                raise RuntimeError("Undeclared Update release ZIP leading payload.")
             if [member.filename for member in members] != filenames:
                 raise RuntimeError("Update release file list does not match ZIP members.")
 

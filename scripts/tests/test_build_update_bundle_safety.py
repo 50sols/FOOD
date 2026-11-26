@@ -919,6 +919,56 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                         (output_dir / ".FOODEX-Update.publish.lock").exists()
                     )
 
+    def test_update_release_group_refuses_undeclared_zip_prefix(self) -> None:
+        # zipfile deliberately supports ZIPs with an executable/data prefix,
+        # adjusting member offsets so all declared members still read. The
+        # trusted first-party ZIP builder emits no such unlisted bytes.
+        for variant in ("canonical", "hidden_prefix"):
+            with self.subTest(variant=variant):
+                with tempfile.TemporaryDirectory() as temporary:
+                    output_dir = Path(temporary)
+                    staging, contents = self._staged_release_fixture(output_dir)
+                    if variant == "hidden_prefix":
+                        payload = b"UNDECLARED-PRIVATE-PREFIX\x00"
+                        archive_bytes = payload + contents["FOODEX-Update.zip"]
+                        # Confirm this is a readable ZIP with the same
+                        # declared contents, not simply a corrupt archive.
+                        with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+                            self.assertEqual(archive.namelist(), ["backend/artisan"])
+                            self.assertEqual(
+                                archive.read("backend/artisan"),
+                                b"<?php // staged reviewed Laravel CLI",
+                            )
+                            self.assertEqual(
+                                archive.infolist()[0].header_offset, len(payload)
+                            )
+                        digest = hashlib.sha256(archive_bytes).hexdigest()
+                        manifest = json.loads(contents["FOODEX-Update.json"])
+                        manifest["sha256"] = digest
+                        contents["FOODEX-Update.zip"] = archive_bytes
+                        contents["FOODEX-Update.json"] = (
+                            json.dumps(manifest) + "\n"
+                        ).encode("utf-8")
+                        contents["FOODEX-Update.sha256.txt"] = (
+                            f"{digest}  FOODEX-Update.zip\n"
+                        ).encode("utf-8")
+                        for name, value in contents.items():
+                            (staging / name).write_bytes(value)
+
+                    if variant == "canonical":
+                        builder.publish_release_bundle(staging, output_dir)
+                        for name, value in contents.items():
+                            self.assertEqual((output_dir / name).read_bytes(), value)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "ZIP leading payload"):
+                            builder.publish_release_bundle(staging, output_dir)
+                        for name, value in contents.items():
+                            self.assertFalse(os.path.lexists(output_dir / name), name)
+                            self.assertEqual((staging / name).read_bytes(), value)
+                    self.assertFalse(
+                        (output_dir / ".FOODEX-Update.publish.lock").exists()
+                    )
+
     def test_update_release_group_enforces_runtime_expansion_budgets_before_publish(self) -> None:
         # Real Laravel Verify Package defaults reject >50k ZIP entries, >256 MiB
         # per entry or >1 GiB cumulative expanded data. A coherent ZIP and
