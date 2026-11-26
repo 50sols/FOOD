@@ -2284,7 +2284,6 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
-
     public function test_contract_lifecycle_and_supplier_governance_recheck_persisted_manage_deny_inside_transactions_in_ar_and_en(): void
     {
         $this->enableProcurement();
@@ -2351,7 +2350,7 @@ final class EnterpriseProcurementCompletionTest extends TestCase
             ];
 
             $assertLateDeny = function (User $subject, int $permissionId, callable $mutation) use (
-                &$armed, &$injected, &$currentActor, &$currentPermissionId, $actor, $checker
+                &$armed, &$injected, &$currentActor, &$currentPermissionId
             ): void {
                 $beforeAudit = DB::table('audit_logs')->count();
                 $armed = true;
@@ -2403,10 +2402,10 @@ final class EnterpriseProcurementCompletionTest extends TestCase
                 $completion->assignContractToOrder($actor, $context, $order->id, $contract->id);
             });
             $this->assertNull(DB::table('enterprise_purchase_orders')
-                ->where('id', $order->id)->value('contract_id'));
+                ->where('id', $order->id)->value('procurement_contract_id'));
             $completion->assignContractToOrder($actor, $context, $order->id, $contract->id);
             $this->assertSame((int) $contract->id, (int) DB::table('enterprise_purchase_orders')
-                ->where('id', $order->id)->value('contract_id'));
+                ->where('id', $order->id)->value('procurement_contract_id'));
 
             $assertLateDeny($actor, $orderPermissionId, static function () use (
                 $completion, $actor, $context, $contract
