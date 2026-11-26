@@ -1099,17 +1099,23 @@ final class EnterpriseProcurementCompletionTest extends TestCase
             0,
             $context->enterpriseScope,
         )['rows'];
+        $readSavingsChart = fn (): array => $completion->dashboard($actor, $context, [
+            'from' => now()->subDay()->toDateString(),
+            'to' => now()->addDay()->toDateString(),
+        ])['charts']['savings'];
 
         foreach (['ar', 'en'] as $locale) {
             app()->setLocale($locale);
             $this->assertSame([$rfq->rfq_number], array_column($readSavings(), 'rfq_number'));
             $this->assertSame([$rfq->rfq_number], array_column($readSavingsBridge(), 'rfq_number'));
+            $this->assertSame([$rfq->rfq_number], array_column($readSavingsChart(), 'label'));
 
             $auditBefore = DB::table('audit_logs')->count();
             DB::table('enterprise_suppliers')->where('id', $supplier->id)
                 ->update(['scope_type' => 'store', 'store_id' => $foreignStore->id]);
             $this->assertSame([], $readSavings(), 'A transferred supplier must not leak RFQ financials.');
             $this->assertSame([], $readSavingsBridge(), 'BI cannot bypass live supplier scope.');
+            $this->assertSame([], $readSavingsChart(), 'Dashboard savings must not bypass live supplier scope.');
             $this->assertSame($auditBefore, DB::table('audit_logs')->count());
 
             // Preserve legitimate company-wide supplier access and exact
@@ -1118,10 +1124,12 @@ final class EnterpriseProcurementCompletionTest extends TestCase
                 ->update(['scope_type' => 'company', 'store_id' => null]);
             $this->assertSame([$rfq->rfq_number], array_column($readSavings(), 'rfq_number'));
             $this->assertSame([$rfq->rfq_number], array_column($readSavingsBridge(), 'rfq_number'));
+            $this->assertSame([$rfq->rfq_number], array_column($readSavingsChart(), 'label'));
             DB::table('enterprise_suppliers')->where('id', $supplier->id)
                 ->update(['scope_type' => 'store', 'store_id' => $store->id]);
             $this->assertSame([$rfq->rfq_number], array_column($readSavings(), 'rfq_number'));
             $this->assertSame([$rfq->rfq_number], array_column($readSavingsBridge(), 'rfq_number'));
+            $this->assertSame([$rfq->rfq_number], array_column($readSavingsChart(), 'label'));
             $this->assertSame($auditBefore, DB::table('audit_logs')->count());
         }
     }

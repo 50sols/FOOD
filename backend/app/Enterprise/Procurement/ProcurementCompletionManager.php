@@ -3059,11 +3059,23 @@ final class ProcurementCompletionManager
     {
         return DB::table('enterprise_procurement_quotes as quotes')
             ->join('enterprise_procurement_rfqs as rfqs', 'rfqs.id', '=', 'quotes.rfq_id')
+            ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'quotes.supplier_id')
             ->join('enterprise_procurement_quote_lines as quote_lines', 'quote_lines.quote_id', '=', 'quotes.id')
             ->join('enterprise_procurement_rfq_lines as rfq_lines', 'rfq_lines.id', '=', 'quote_lines.rfq_line_id')
             ->where('rfqs.organization_id', $organizationId)
             ->where('rfqs.company_id', $companyId)
             ->where('rfqs.store_id', $storeId)
+            // Match the detailed savings report: a previously awarded RFQ
+            // cannot disclose a supplier's financials after a store transfer.
+            ->where('suppliers.organization_id', $organizationId)
+            ->where('suppliers.company_id', $companyId)
+            ->where(function (QueryBuilder $query) use ($storeId): void {
+                $query->where('suppliers.scope_type', 'company')
+                    ->orWhere(function (QueryBuilder $store) use ($storeId): void {
+                        $store->where('suppliers.scope_type', 'store')
+                            ->where('suppliers.store_id', $storeId);
+                    });
+            })
             ->where('quotes.status', 'awarded')
             ->whereBetween('quotes.awarded_at', [$from.' 00:00:00', $to.' 23:59:59'])
             ->selectRaw(
