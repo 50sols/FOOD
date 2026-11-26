@@ -972,6 +972,21 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
         # Hashing coherent extra data does not declare or authorize it.
         if len(zip_ending) != 22 or zip_ending[:4] != b"PK\x05\x06":
             raise RuntimeError("Undeclared Update release ZIP trailing payload.")
+        # zipfile enumerates central-directory headers regardless of the
+        # EOCD entry counts. ZIP consumers may disagree when those counts or
+        # disk markers are corrupt, or a central-directory tail is undeclared.
+        # Our producer emits one canonical disk, exact counts and a central
+        # directory ending immediately before the 22-byte comment-free EOCD.
+        central_size = int.from_bytes(zip_ending[12:16], "little")
+        central_offset = int.from_bytes(zip_ending[16:20], "little")
+        if (
+            zip_ending[4:8] != b"\x00\x00\x00\x00"
+            or int.from_bytes(zip_ending[8:10], "little") != len(filenames)
+            or int.from_bytes(zip_ending[10:12], "little") != len(filenames)
+            or zip_ending[20:22] != b"\x00\x00"
+            or central_offset + central_size != archive_path.stat().st_size - 22
+        ):
+            raise RuntimeError("Inconsistent Update release ZIP end-directory metadata.")
         with zipfile.ZipFile(archive_path) as archive:
             members = archive.infolist()
             # The canonical producer emits no ZIP-level comments. Coherent

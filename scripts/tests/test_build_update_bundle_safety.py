@@ -1060,6 +1060,66 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                         (output_dir / ".FOODEX-Update.publish.lock").exists()
                     )
 
+    def test_update_release_group_rejects_inconsistent_end_directory(self) -> None:
+        # The manifest, SHA-256 and ZIP payload can all be coherent while
+        # ZIP readers disagree about the physical end-directory counts.
+        # The canonical producer writes one disk and exact central size.
+        cases = (
+            ("canonical", None, None),
+            ("entries_this_disk", 8, 2),
+            ("total_entries", 10, 2),
+            ("disk_number", 4, 2),
+            ("central_disk_number", 6, 2),
+            ("central_size", 12, 4),
+        )
+        for variant, field, width in cases:
+            with self.subTest(variant=variant):
+                with tempfile.TemporaryDirectory() as temporary:
+                    output_dir = Path(temporary)
+                    staging, contents = self._staged_release_fixture(output_dir)
+                    binary = bytearray(contents["FOODEX-Update.zip"])
+                    if field is not None:
+                        offset = len(binary) - 22 + field
+                        old = int.from_bytes(binary[offset:offset + width], "little")
+                        binary[offset:offset + width] = (old + 1).to_bytes(width, "little")
+                    zipped = bytes(binary)
+                    if variant in ("canonical", "entries_this_disk", "total_entries"):
+                        # Python still reads all files despite the changed EOCD
+                        # counts; other ZIP implementations can disagree.
+                        with zipfile.ZipFile(io.BytesIO(zipped)) as archive:
+                            self.assertEqual(archive.namelist(), ["backend/artisan"])
+                            self.assertEqual(
+                                archive.read("backend/artisan"),
+                                b"<?php // staged reviewed Laravel CLI",
+                            )
+                    digest = hashlib.sha256(zipped).hexdigest()
+                    manifest = json.loads(contents["FOODEX-Update.json"])
+                    manifest["sha256"] = digest
+                    contents["FOODEX-Update.json"] = (
+                        json.dumps(manifest) + "\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.sha256.txt"] = (
+                        f"{digest}  FOODEX-Update.zip\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.zip"] = zipped
+                    for name, value in contents.items():
+                        (staging / name).write_bytes(value)
+                    if variant == "canonical":
+                        builder.publish_release_bundle(staging, output_dir)
+                        for name, value in contents.items():
+                            self.assertEqual((output_dir / name).read_bytes(), value)
+                    else:
+                        with self.assertRaisesRegex(
+                            RuntimeError, "ZIP end-directory metadata"
+                        ):
+                            builder.publish_release_bundle(staging, output_dir)
+                        for name, value in contents.items():
+                            self.assertFalse(os.path.lexists(output_dir / name), name)
+                            self.assertEqual((staging / name).read_bytes(), value)
+                    self.assertFalse(
+                        (output_dir / ".FOODEX-Update.publish.lock").exists()
+                    )
+
     def test_update_release_group_rejects_local_header_integrity_drift(self) -> None:
         # zipfile reads CRC and lengths from the central directory, so
         # adversarial local-only overrides remain readable even with a
