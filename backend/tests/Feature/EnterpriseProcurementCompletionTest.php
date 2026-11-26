@@ -1082,6 +1082,48 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         $this->assertArrayHasKey('spend_by_category', $dashboard['charts']);
         $this->assertArrayHasKey('po_aging', $dashboard['charts']);
         $this->assertNotEmpty($dashboard['charts']['savings']);
+
+        // The authorized RFQ was awarded at Store A, but the supplier is a
+        // separate live legal/store entitlement. Historic pricing cannot
+        // reveal a supplier moved to Store B through either report entry.
+        $foreignStore = $this->createRetailStore('P135-RFQ-SAVINGS-FOREIGN');
+        $readSavings = fn (): array => $completion->report($actor, $context, 'savings', [
+            'from' => now()->subDay()->toDateString(),
+            'to' => now()->addDay()->toDateString(),
+        ])['rows'];
+        $readSavingsBridge = fn (): array => $completion->reportForStore(
+            'savings',
+            $store->id,
+            ['from' => now()->subDay()->toDateString(), 'to' => now()->addDay()->toDateString()],
+            25,
+            0,
+            $context->enterpriseScope,
+        )['rows'];
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $this->assertSame([$rfq->rfq_number], array_column($readSavings(), 'rfq_number'));
+            $this->assertSame([$rfq->rfq_number], array_column($readSavingsBridge(), 'rfq_number'));
+
+            $auditBefore = DB::table('audit_logs')->count();
+            DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                ->update(['scope_type' => 'store', 'store_id' => $foreignStore->id]);
+            $this->assertSame([], $readSavings(), 'A transferred supplier must not leak RFQ financials.');
+            $this->assertSame([], $readSavingsBridge(), 'BI cannot bypass live supplier scope.');
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+            // Preserve legitimate company-wide supplier access and exact
+            // original-store access, including the bridge's independent read.
+            DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                ->update(['scope_type' => 'company', 'store_id' => null]);
+            $this->assertSame([$rfq->rfq_number], array_column($readSavings(), 'rfq_number'));
+            $this->assertSame([$rfq->rfq_number], array_column($readSavingsBridge(), 'rfq_number'));
+            DB::table('enterprise_suppliers')->where('id', $supplier->id)
+                ->update(['scope_type' => 'store', 'store_id' => $store->id]);
+            $this->assertSame([$rfq->rfq_number], array_column($readSavings(), 'rfq_number'));
+            $this->assertSame([$rfq->rfq_number], array_column($readSavingsBridge(), 'rfq_number'));
+            $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        }
     }
 
     public function test_supplier_governance_rechecks_module_shutdown_after_preflight_in_ar_and_en(): void

@@ -3242,6 +3242,16 @@ final class ProcurementCompletionManager
             ->where('rfqs.company_id', $companyId)
             ->where('suppliers.organization_id', $organizationId)
             ->where('suppliers.company_id', $companyId)
+            // A historical quote does not preserve access to a supplier
+            // transferred out of this store. Match the live legal scope as
+            // contract reports do before exposing award/baseline amounts.
+            ->where(function (QueryBuilder $query) use ($storeId): void {
+                $query->where('suppliers.scope_type', 'company')
+                    ->orWhere(function (QueryBuilder $store) use ($storeId): void {
+                        $store->where('suppliers.scope_type', 'store')
+                            ->where('suppliers.store_id', $storeId);
+                    });
+            })
             ->where('rfqs.store_id', $storeId)
             ->where('quotes.status', 'awarded')
             ->whereBetween('quotes.awarded_at', [$from.' 00:00:00', $to.' 23:59:59'])
