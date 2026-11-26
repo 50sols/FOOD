@@ -969,6 +969,74 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                         (output_dir / ".FOODEX-Update.publish.lock").exists()
                     )
 
+    def test_update_release_group_rejects_file_directory_collisions_before_publish(self) -> None:
+        # zipfile can read both members of an impossible on-disk file tree,
+        # but Laravel Verify Package correctly rejects their parent alias.
+        # Coherent ZIP, manifest, file inventory and digest are NOT enough.
+        for names in (
+            ("backend/app/Module.php", "backend/app/Module.php/child.php"),
+            ("backend/app/Module.php/child.php", "backend/app/Module.php"),
+            ("backend/app/Module.php", "backend/app/module.php/child.php"),
+        ):
+            with self.subTest(names=names):
+                with tempfile.TemporaryDirectory() as temporary:
+                    output_dir = Path(temporary)
+                    staging, contents = self._staged_release_fixture(output_dir)
+                    binary = io.BytesIO()
+                    with zipfile.ZipFile(binary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                        for name in names:
+                            archive.writestr(name, b"<?php // valid individual file")
+                    zipped = binary.getvalue()
+                    with zipfile.ZipFile(io.BytesIO(zipped)) as archive:
+                        self.assertEqual(archive.namelist(), list(names))
+                        for name in names:
+                            self.assertEqual(archive.read(name), b"<?php // valid individual file")
+
+                    digest = hashlib.sha256(zipped).hexdigest()
+                    manifest = json.loads(contents["FOODEX-Update.json"])
+                    manifest["sha256"] = digest
+                    manifest["delta"]["file_count"] = 2
+                    manifest["delta"]["source_file_count"] = 2
+                    contents["FOODEX-Update.json"] = (json.dumps(manifest) + "\n").encode("utf-8")
+                    contents["FOODEX-Update.files.txt"] = ("\n".join(names) + "\n").encode("utf-8")
+                    contents["FOODEX-Update.sha256.txt"] = (
+                        f"{digest}  FOODEX-Update.zip\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.zip"] = zipped
+                    for name, data in contents.items():
+                        (staging / name).write_bytes(data)
+
+                    with self.assertRaisesRegex(RuntimeError, "file/directory collision"):
+                        builder.publish_release_bundle(staging, output_dir)
+                    for name, data in contents.items():
+                        self.assertFalse(os.path.lexists(output_dir / name), name)
+                        self.assertEqual((staging / name).read_bytes(), data)
+                    self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
+
+    def test_update_zip_builder_rejects_file_parent_alias_before_source_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "out" / "update.zip"
+            entries = [
+                ("backend/app/File.php", "backend/app/File.php"),
+                ("backend/app/file.php/child.php", "backend/app/file.php/child.php"),
+            ]
+            with mock.patch.object(builder, "trusted_source_file") as trusted:
+                with mock.patch.object(builder.tempfile, "mkstemp") as staged:
+                    with self.assertRaisesRegex(RuntimeError, "file/directory collision"):
+                        builder.build_zip(root, entries, output)
+                    trusted.assert_not_called()
+                    staged.assert_not_called()
+            self.assertFalse(output.exists())
+
+        # Legitimate sibling files remain eligible; canonical releases
+        # are still published by test_complete_update_release_publishes_zip_last.
+        builder.assert_no_file_directory_collisions([
+            "backend/app/File.php",
+            "backend/app/File.php.bak",
+            "backend/app/Folder/child.php",
+        ])
+
     def test_update_release_group_enforces_runtime_expansion_budgets_before_publish(self) -> None:
         # Real Laravel Verify Package defaults reject >50k ZIP entries, >256 MiB
         # per entry or >1 GiB cumulative expanded data. A coherent ZIP and

@@ -585,6 +585,24 @@ def _open_pinned_source(
             os.close(parent_fd)
 
 
+def assert_no_file_directory_collisions(filenames: list[str]) -> None:
+    """Match the Laravel Verify Package file/parent collision safety rule.
+
+    A regular ZIP file cannot simultaneously be a directory ancestor of
+    another file. Python zipfile accepts such archives, while PHP ZipArchive
+    and the Laravel verifier must reject them on shared-host filesystems.
+    """
+    file_names = {name.casefold() for name in filenames}
+    for name in file_names:
+        parts = name.split("/")[:-1]
+        while parts:
+            if "/".join(parts) in file_names:
+                raise RuntimeError(
+                    f"Update ZIP contains a file/directory collision: {name}"
+                )
+            parts.pop()
+
+
 def build_zip(repo_root: Path, entries: list[tuple[str, str]], output: Path) -> None:
     # Preflight all sources and pin their reviewed inode metadata. Hold no
     # unbounded number of open descriptors while scanning a full Laravel tree.
@@ -595,6 +613,7 @@ def build_zip(repo_root: Path, entries: list[tuple[str, str]], output: Path) -> 
     # or spending hosted runner resources compressing a doomed package.
     if len(entries) > MAX_UPDATE_ZIP_MEMBERS:
         raise RuntimeError("Update ZIP input exceeds runtime extraction budget: member count.")
+    assert_no_file_directory_collisions([name for name, _ in entries])
     expanded_bytes = 0
     for archive_name, source_relative in entries:
         canonical = safe_path(archive_name)
@@ -961,6 +980,10 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
                 raise RuntimeError("Undeclared Update release ZIP leading payload.")
             if [member.filename for member in members] != filenames:
                 raise RuntimeError("Update release file list does not match ZIP members.")
+            # This must agree with UpdatePackageValidator::validateArchive:
+            # a readable, checksummed ZIP with a file as another member's
+            # parent path is not a deployable update, including case aliases.
+            assert_no_file_directory_collisions(filenames)
 
             # Fail before decompression if a coherent ZIP+manifest exceeds the
             # default limits enforced by Laravel's Verify Package runtime.
