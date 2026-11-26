@@ -969,6 +969,57 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                         (output_dir / ".FOODEX-Update.publish.lock").exists()
                     )
 
+    def test_update_release_group_rejects_undeclared_zip_trailing_payload(self) -> None:
+        # Python's archive reader ignores trailing bytes after EOCD even if
+        # every member reads correctly and the ZIP + sidecars are coherently
+        # rehashed. Only the canonical, comment-free producer envelope is
+        # allowed at the ZIP-last publication boundary.
+        for variant, suffix in (
+            ("canonical", b""),
+            ("single_byte", b"\x00"),
+            ("opaque_trailer", b"UNLISTED-ARCHIVE-TRAILER\x00"),
+        ):
+            with self.subTest(variant=variant):
+                with tempfile.TemporaryDirectory() as temporary:
+                    output_dir = Path(temporary)
+                    staging, contents = self._staged_release_fixture(output_dir)
+                    archive_bytes = contents["FOODEX-Update.zip"] + suffix
+                    with zipfile.ZipFile(io.BytesIO(archive_bytes)) as archive:
+                        self.assertEqual(archive.namelist(), ["backend/artisan"])
+                        self.assertEqual(
+                            archive.read("backend/artisan"),
+                            b"<?php // staged reviewed Laravel CLI",
+                        )
+                        self.assertEqual(archive.comment, b"")
+                        self.assertEqual(archive.infolist()[0].header_offset, 0)
+
+                    digest = hashlib.sha256(archive_bytes).hexdigest()
+                    manifest = json.loads(contents["FOODEX-Update.json"])
+                    manifest["sha256"] = digest
+                    contents["FOODEX-Update.zip"] = archive_bytes
+                    contents["FOODEX-Update.json"] = (
+                        json.dumps(manifest) + "\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.sha256.txt"] = (
+                        f"{digest}  FOODEX-Update.zip\n"
+                    ).encode("utf-8")
+                    for name, value in contents.items():
+                        (staging / name).write_bytes(value)
+
+                    if not suffix:
+                        builder.publish_release_bundle(staging, output_dir)
+                        for name, value in contents.items():
+                            self.assertEqual((output_dir / name).read_bytes(), value)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "ZIP trailing payload"):
+                            builder.publish_release_bundle(staging, output_dir)
+                        for name, value in contents.items():
+                            self.assertFalse(os.path.lexists(output_dir / name), name)
+                            self.assertEqual((staging / name).read_bytes(), value)
+                    self.assertFalse(
+                        (output_dir / ".FOODEX-Update.publish.lock").exists()
+                    )
+
     def test_update_release_group_rejects_file_directory_collisions_before_publish(self) -> None:
         # zipfile can read both members of an impossible on-disk file tree,
         # but Laravel Verify Package correctly rejects their parent alias.

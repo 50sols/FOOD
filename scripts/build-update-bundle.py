@@ -959,11 +959,19 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
             raise RuntimeError("Update release manifest migration inventory mismatch.")
 
         actual_hash = hashlib.sha256()
+        zip_ending = b""
         with archive_path.open("rb") as binary:
             for chunk in iter(lambda: binary.read(1024 * 1024), b""):
                 actual_hash.update(chunk)
+                zip_ending = (zip_ending + chunk)[-22:]
         if actual_hash.hexdigest() != expected_hash:
             raise RuntimeError("Update release ZIP digest does not match manifest.")
+        # Python zipfile scans backwards for EOCD and accepts arbitrary bytes
+        # appended after a valid archive. The deterministic first-party
+        # builder always writes a comment-free 22-byte EOCD at the real EOF.
+        # Hashing coherent extra data does not declare or authorize it.
+        if len(zip_ending) != 22 or zip_ending[:4] != b"PK\x05\x06":
+            raise RuntimeError("Undeclared Update release ZIP trailing payload.")
         with zipfile.ZipFile(archive_path) as archive:
             members = archive.infolist()
             # The canonical producer emits no ZIP-level comments. Coherent
