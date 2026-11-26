@@ -64,6 +64,58 @@ final class V2ErpSidebarOperationalBoundaryTest extends TestCase
         $this->get(route('admin.erp.procurement.index'))->assertForbidden();
     }
 
+    public function test_operational_scope_rejects_stale_offboarded_and_forged_actor_in_ar_en(): void
+    {
+        $store = Store::query()->where('code', 'V2-ERP-BOUNDARY-WHOLESALE')->firstOrFail();
+        $scope = app(OperationalTenantScope::class);
+
+        foreach (['en', 'ar'] as $locale) {
+            $actor = $this->superAdmin('v2-erp-scoped-reader-'.$locale.'@example.test');
+            $actor->forceFill(['locale' => $locale])->save();
+            app()->setLocale($locale);
+            $id = (int) $actor->getKey();
+
+            // The persisted, active owner can read the real Wholesale store.
+            $this->assertContains(
+                (int) $store->id,
+                $scope->allowedStoreIds($actor, 'procurement.suppliers.view', 'B2B'),
+            );
+
+            // A freshly manufactured, unsaved principal with a copied ID is
+            // never a substitute for a stored authenticated identity.
+            $forged = new User(['is_active' => true]);
+            $forged->setAttribute($actor->getKeyName(), $id);
+            $this->assertSame(
+                [],
+                $scope->allowedStoreIds($forged, 'procurement.suppliers.view', 'B2B'),
+            );
+
+            // In-memory ID mutation must not turn a retained valid owner
+            // into a different principal or a privileged scope.
+            $actor->setAttribute($actor->getKeyName(), $id + 1000000);
+            $this->assertSame(
+                [],
+                $scope->allowedStoreIds($actor, 'procurement.suppliers.view', 'B2B'),
+            );
+            $actor->setAttribute($actor->getKeyName(), $id);
+
+            // The original User object still says active; current database
+            // offboarding must revoke the scope on this same invocation.
+            DB::table('users')->where('id', $id)->update(['is_active' => false]);
+            $this->assertTrue((bool) $actor->is_active);
+            $this->assertSame(
+                [],
+                $scope->allowedStoreIds($actor, 'procurement.suppliers.view', 'B2B'),
+            );
+
+            DB::table('users')->where('id', $id)->update(['is_active' => true]);
+            $this->assertContains(
+                (int) $store->id,
+                $scope->allowedStoreIds($actor, 'procurement.suppliers.view', 'B2B'),
+            );
+        }
+    }
+
     public function test_platform_owner_without_an_active_wholesale_store_keeps_read_only_setup_diagnostics(): void
     {
         $this->app['env'] = 'production';

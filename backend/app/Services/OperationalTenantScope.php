@@ -15,11 +15,21 @@ final class OperationalTenantScope
         $channel = $channel === null ? null : strtoupper($channel);
         $roleChannel = $channel ?? 'B2C';
 
-        // A disabled account must never acquire operational tenant scopes,
-        // including through the Super Admin shortcut.
-        if (! $user->is_active) {
+        // A caller may retain a formerly active principal or dirty the
+        // in-memory primary key. Neither a stale User nor a forged ID may
+        // authorize the Super Admin shortcut or store-scoped ERP reads.
+        // Rehydrate the original persisted identity before inspecting roles,
+        // permission overrides or the current active state.
+        $originalId = $user->exists ? $user->getRawOriginal($user->getKeyName()) : null;
+        if ($originalId === null || (string) $user->getKey() !== (string) $originalId) {
             return [];
         }
+
+        $persisted = User::query()->whereKey($originalId)->where('is_active', true)->first();
+        if (! $persisted instanceof User) {
+            return [];
+        }
+        $user = $persisted;
 
         if ($user->hasRole('SUPER_ADMIN')) {
             return $this->storeIdsForChannels($channel === null ? ['B2B', 'B2C'] : [$channel]);
