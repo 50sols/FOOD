@@ -55,6 +55,20 @@ class B2bPriceResolver
             return [];
         }
 
+        // This unguarded Eloquent model can be passed by service callers with
+        // a dirty primary key. Never use that caller-visible key to select a
+        // different customer's active account or confidential price tier.
+        $originalCustomerId = $customer->getRawOriginal($customer->getKeyName());
+        if (! $customer->exists || $originalCustomerId === null
+            || (string) $customer->getKey() !== (string) $originalCustomerId) {
+            throw new HttpException(403, 'Persisted B2B customer identity is required.');
+        }
+
+        $customer = B2bCustomer::query()->whereKey($originalCustomerId)->first();
+        if (! $customer instanceof B2bCustomer) {
+            throw new HttpException(403, 'Persisted B2B customer identity is required.');
+        }
+
         $account = B2bAccount::query()
             ->where('b2b_customer_id', $customer->getKey())
             ->where('status', 'active')
@@ -67,6 +81,34 @@ class B2bPriceResolver
         if (! $account instanceof B2bAccount) {
             throw new HttpException(403, 'Approved B2B pricing account is required.');
         }
+
+        // Account revocation or reassignment can be persisted during the
+        // subsequent product/rule queries. Do not disclose a stale private
+        // tier price under an earlier active-account snapshot.
+        $requireCurrentAccount = static function () use ($account, $customer): void {
+            $stillAllowed = B2bAccount::query()
+                ->whereKey($account->getKey())
+                ->where('b2b_customer_id', $customer->getKey())
+                ->where('status', 'active')
+                ->where('price_tier_id', $account->price_tier_id)
+                ->exists();
+            if (! $stillAllowed) {
+                throw new HttpException(403, 'Approved B2B pricing account is required.');
+            }
+        };
+
+        // The rule SELECT checks is_active, but the tier may be revoked
+        // before those confidential prices are returned to the caller.
+        // Revalidate at the final service boundary, not only in the join.
+        $requireCurrentTier = static function () use ($account): void {
+            $stillActive = DB::table('b2b_price_tiers')
+                ->where('id', $account->price_tier_id)
+                ->where('is_active', true)
+                ->exists();
+            if (! $stillActive) {
+                throw new HttpException(403, 'Approved B2B price tier is required.');
+            }
+        };
 
         $tiersEnabledByStore = [];
         foreach ($targets->pluck('store_id')->unique() as $storeId) {
@@ -83,12 +125,17 @@ class B2bPriceResolver
 
         $baseResolved = $this->platformFallbackMany($baseTargets->all());
         if ($tierTargets->isEmpty()) {
+            $requireCurrentAccount();
+
             return $baseResolved;
         }
 
         if ($account->price_tier_id === null) {
             if ($isPlatformCustomer) {
-                return $baseResolved + $this->platformFallbackMany($tierTargets->all());
+                $fallback = $this->platformFallbackMany($tierTargets->all());
+                $requireCurrentAccount();
+
+                return $baseResolved + $fallback;
             }
 
             throw new HttpException(403, 'Approved B2B pricing account is required.');
@@ -96,6 +143,11 @@ class B2bPriceResolver
 
         $groupedTargets = $tierTargets->groupBy('store_id');
         $rules = DB::table('b2b_price_rules')
+            // An inactive tier revokes its rule prices even when individual
+            // rules and the account remain active. Enforce at the shared
+            // resolver used by API, cart and order pricing paths.
+            ->join('b2b_price_tiers', 'b2b_price_tiers.id', '=', 'b2b_price_rules.price_tier_id')
+            ->where('b2b_price_tiers.is_active', true)
             ->join('products', 'products.id', '=', 'b2b_price_rules.product_id')
             ->join('catalogs', 'catalogs.id', '=', 'products.catalog_id')
             ->join('stores', 'stores.id', '=', 'b2b_price_rules.store_id')
@@ -151,6 +203,14 @@ class B2bPriceResolver
         }
 
         if (! $isPlatformCustomer) {
+            $requireCurrentAccount();
+            // A missing (or already revoked) tier price remains the legacy
+            // no-price/409 path; only previously selected private prices need
+            // late-revocation verification.
+            if ($resolved !== []) {
+                $requireCurrentTier();
+            }
+
             return $baseResolved + $resolved;
         }
 
@@ -161,7 +221,13 @@ class B2bPriceResolver
             ->values()
             ->all();
 
-        return $baseResolved + $resolved + $this->platformFallbackMany($missing);
+        $fallback = $this->platformFallbackMany($missing);
+        $requireCurrentAccount();
+        if ($resolved !== []) {
+            $requireCurrentTier();
+        }
+
+        return $baseResolved + $resolved + $fallback;
     }
 
     /**

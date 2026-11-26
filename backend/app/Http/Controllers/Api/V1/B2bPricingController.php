@@ -20,6 +20,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Validation\Rule;
 
 class B2bPricingController extends Controller
 {
@@ -46,10 +47,18 @@ class B2bPricingController extends Controller
             $this->tiersDisabledMessage($request, $user),
         );
 
+        // Treat a nested or non-integer page-size selector as invalid input,
+        // not as a scalar coerced by Request::integer(). Keep the legacy
+        // bounded 1..100 behavior for authorized scalar integers.
+        $pagination = $request->validate([
+            'per_page' => ['sometimes', 'integer'],
+        ]);
+        $perPage = min(max((int) ($pagination['per_page'] ?? 20), 1), 100);
+
         $rules = B2bPriceRule::query()
             ->where('store_id', $storeId)
             ->orderBy('id')
-            ->paginate(min(max($request->integer('per_page', 20), 1), 100));
+            ->paginate($perPage);
 
         return response()->json([
             'data' => $rules->items(),
@@ -59,57 +68,7 @@ class B2bPricingController extends Controller
 
     public function upsert(Request $request): JsonResponse
     {
-        $user = $request->user();
-        abort_unless($user instanceof User, 401);
-        Gate::authorize('b2b.pricing.manage');
-        $data = $request->validate([
-            'price_tier_id' => ['required', 'integer', 'exists:b2b_price_tiers,id'],
-            'store_id' => ['required', 'integer', 'exists:stores,id'],
-            'product_id' => ['required', 'integer', 'exists:products,id'],
-            'unit_price' => ['required', 'numeric', 'gte:0'],
-            'minimum_quantity' => ['required', 'numeric', 'gt:0'],
-            'ordering_increment' => ['nullable', 'numeric', 'gt:0'],
-            'pack_size' => ['nullable', 'numeric', 'gt:0'],
-            'case_size' => ['nullable', 'numeric', 'gt:0'],
-            'pack_label' => ['nullable', 'string', 'max:80'],
-            'retail_reference_price' => ['nullable', 'numeric', 'gte:0'],
-            'is_active' => ['sometimes', 'boolean'],
-            'quantity_price_breaks' => ['sometimes', 'array', 'max:12'],
-            'quantity_price_breaks.*.minimum_quantity' => ['required', 'numeric', 'gt:0'],
-            'quantity_price_breaks.*.unit_price' => ['required', 'numeric', 'gte:0'],
-            'replace_quantity_price_breaks' => ['sometimes', 'boolean'],
-        ]);
-        // Preserve the authorized multi-store B2B API contract while rejecting
-        // another channel, inactive stores and explicit per-user store DENYs.
-        $storeId = (int) $data['store_id'];
-        $this->tenantScope->assertStore($user, $storeId, 'b2b.pricing.manage', 'b2b');
-        abort_unless($this->pricingMode->tiersEnabled($storeId), 409, $this->tiersDisabledMessage($request, $user));
-
-        $ownedProduct = DB::table('products')
-            ->join('catalogs', 'catalogs.id', '=', 'products.catalog_id')
-            ->join('stores', 'stores.id', '=', 'catalogs.store_id')
-            ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
-            ->where('products.id', $data['product_id'])
-            ->where('catalogs.store_id', $data['store_id'])
-            ->where('catalogs.channel', 'b2b')
-            ->where('catalogs.is_active', true)
-            ->where('catalogs.is_migration_quarantine', false)
-            ->where('store_types.code', 'B2B')
-            ->exists();
-        abort_unless($ownedProduct, 422, 'Product must belong to the selected B2B store catalog.');
-
-        // Omitted breaks in legacy API requests preserve their existing contract.
-        // An explicit list or Dashboard replace flag atomically replaces the list.
-        $replaceBreaks = array_key_exists('quantity_price_breaks', $data)
-            || (bool) ($data['replace_quantity_price_breaks'] ?? false);
-        $breaks = $replaceBreaks
-            ? QuantityPriceBreaks::normalize(
-                $data['quantity_price_breaks'] ?? [],
-                (float) $data['minimum_quantity'],
-                (float) ($data['ordering_increment'] ?? 1),
-                (float) $data['unit_price'],
-            )
-            : null;
+        [$data, $replaceBreaks, $breaks] = $this->validatedRuleInput($request);
 
         $rule = DB::transaction(function () use ($data, $request, $replaceBreaks, $breaks): B2bPriceRule {
             // A legacy caller may omit the schedule but must not silently
@@ -154,6 +113,105 @@ class B2bPricingController extends Controller
         });
 
         return response()->json(['data' => $rule], $rule->wasRecentlyCreated ? 201 : 200);
+    }
+
+    /**
+     * Read-only precheck for the existing Wholesale price-rule form. Uses the
+     * exact authorization, tenant/product checks and quantity normalization
+     * used for Save; never writes price rules, settings or audit events.
+     */
+    public function validateCandidate(Request $request): void
+    {
+        [$data, $replaceBreaks] = $this->validatedRuleInput($request);
+
+        // Save also checks persisted breaks when the operator leaves them
+        // unchanged. Mirror that check without locking or writing a record;
+        // Save still performs the authoritative locked recheck to avoid races.
+        if (! $replaceBreaks) {
+            $existing = B2bPriceRule::query()
+                ->where('price_tier_id', $data['price_tier_id'])
+                ->where('store_id', $data['store_id'])
+                ->where('product_id', $data['product_id'])
+                ->first();
+
+            if ($existing instanceof B2bPriceRule) {
+                QuantityPriceBreaks::normalize(
+                    QuantityPriceBreaks::readBreaks($existing->quantity_price_breaks),
+                    (float) $data['minimum_quantity'],
+                    (float) ($data['ordering_increment'] ?? 1),
+                    (float) $data['unit_price'],
+                );
+            }
+        }
+    }
+
+    /**
+     * @return array{0: array<string, mixed>, 1: bool, 2: ?array}
+     */
+    private function validatedRuleInput(Request $request): array
+    {
+        $user = $request->user();
+        abort_unless($user instanceof User, 401);
+        Gate::authorize('b2b.pricing.manage');
+        // Resolve the selected store and its effective permission before
+        // disclosing price-tier, product or price-rule validation details.
+        // STORE DENY overrides the otherwise valid global B2B role.
+        $store = $request->validate([
+            'store_id' => ['required', 'integer', 'exists:stores,id'],
+        ]);
+        $storeId = (int) $store['store_id'];
+        $this->tenantScope->assertStore($user, $storeId, 'b2b.pricing.manage', 'b2b');
+
+        $data = $request->validate([
+            'price_tier_id' => ['required', 'integer', Rule::exists('b2b_price_tiers', 'id')->where('is_active', true)],
+            'store_id' => ['required', 'integer', 'exists:stores,id'],
+            'product_id' => ['required', 'integer', 'exists:products,id'],
+            'unit_price' => ['required', 'numeric', 'gte:0'],
+            'minimum_quantity' => ['required', 'numeric', 'gt:0'],
+            'ordering_increment' => ['nullable', 'numeric', 'gt:0'],
+            'pack_size' => ['nullable', 'numeric', 'gt:0'],
+            'case_size' => ['nullable', 'numeric', 'gt:0'],
+            'pack_label' => ['nullable', 'string', 'max:80'],
+            'retail_reference_price' => ['nullable', 'numeric', 'gte:0'],
+            'is_active' => ['sometimes', 'boolean'],
+            'quantity_price_breaks' => ['sometimes', 'array', 'max:12'],
+            'quantity_price_breaks.*.minimum_quantity' => ['required', 'numeric', 'gt:0'],
+            'quantity_price_breaks.*.unit_price' => ['required', 'numeric', 'gte:0'],
+            'replace_quantity_price_breaks' => ['sometimes', 'boolean'],
+        ]);
+        // Preserve the authorized multi-store B2B API contract while rejecting
+        // another channel, inactive stores and explicit per-user store DENYs.
+        abort_unless($this->pricingMode->tiersEnabled($storeId), 409, $this->tiersDisabledMessage($request, $user));
+
+        $ownedProduct = DB::table('products')
+            ->join('catalogs', 'catalogs.id', '=', 'products.catalog_id')
+            ->join('stores', 'stores.id', '=', 'catalogs.store_id')
+            ->join('store_types', 'store_types.id', '=', 'stores.store_type_id')
+            ->where('products.id', $data['product_id'])
+            ->where('products.is_active', true)
+            ->where('stores.is_active', true)
+            ->where('catalogs.store_id', $data['store_id'])
+            ->where('catalogs.channel', 'b2b')
+            ->where('catalogs.is_active', true)
+            ->where('catalogs.is_migration_quarantine', false)
+            ->where('store_types.code', 'B2B')
+            ->exists();
+        abort_unless($ownedProduct, 422, 'Product must belong to the selected B2B store catalog.');
+
+        // Omitted breaks in legacy API requests preserve their existing contract.
+        // An explicit list or Dashboard replace flag atomically replaces the list.
+        $replaceBreaks = array_key_exists('quantity_price_breaks', $data)
+            || (bool) ($data['replace_quantity_price_breaks'] ?? false);
+        $breaks = $replaceBreaks
+            ? QuantityPriceBreaks::normalize(
+                $data['quantity_price_breaks'] ?? [],
+                (float) $data['minimum_quantity'],
+                (float) ($data['ordering_increment'] ?? 1),
+                (float) $data['unit_price'],
+            )
+            : null;
+
+        return [$data, $replaceBreaks, $breaks];
     }
 
     public function product(Request $request, int $product): JsonResponse
@@ -205,7 +263,8 @@ class B2bPricingController extends Controller
                         ->where('b2b_price_rules.price_tier_id', '=', (int) $account->price_tier_id)
                         ->where('b2b_price_rules.is_active', '=', true);
                 })
-                ->join('b2b_price_tiers', 'b2b_price_tiers.id', '=', 'b2b_price_rules.price_tier_id');
+                ->join('b2b_price_tiers', 'b2b_price_tiers.id', '=', 'b2b_price_rules.price_tier_id')
+                ->where('b2b_price_tiers.is_active', true);
         }
 
         $columns = [
@@ -339,6 +398,9 @@ class B2bPricingController extends Controller
                     ->where('b2b_price_rules.store_id', '=', $storeId)
                     ->where('b2b_price_rules.price_tier_id', '=', (int) $account->price_tier_id)
                     ->where('b2b_price_rules.is_active', '=', true);
+            })->join('b2b_price_tiers', function ($join): void {
+                $join->on('b2b_price_tiers.id', '=', 'b2b_price_rules.price_tier_id')
+                    ->where('b2b_price_tiers.is_active', '=', true);
             });
         }
 

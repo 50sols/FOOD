@@ -77,7 +77,10 @@ function claimReferences(comments) {
     // Other historical issue claims include a PR number in descriptive
     // branch prose. Retain it as a provenance constraint, never as authority.
     const legacyOriginalPr = rawBranch.match(/;\s*PR\s+#([1-9]\d*)\s+original\s+DRAFT;\s*BASE\s+Foodex_V2\.?$/i);
-    const inlinePr = p135OriginalPr || p135Pr || legacyOriginalPr;
+    // Initial #2706 historical handoff (#7068011953) embeds the existing PR
+    // in the ORIGINAL_BRANCH display text. Bind that identity to the live PR.
+    const p2706OriginalPr = rawBranch.match(/^feat\/2706-v2-b2b-pricing-setup-readiness; ORIGINAL_PR: #([1-9]\d*) OPEN\/DRAFT -> Foodex_V2 ONLY$/i);
+    const inlinePr = p135OriginalPr || p135Pr || legacyOriginalPr || p2706OriginalPr;
     const explicitPr = (fields.PR || fields.ORIGINAL_PR || '').match(/^#?([1-9]\d*)(?:\b|$)/);
     const branch = historicMissingBranch ? historicMissingBranch[1] : rawBranch
       .replace(/;\s*(?:BASE|TARGET):.*$/i, '')
@@ -88,13 +91,19 @@ function claimReferences(comments) {
       .replace(/\s+\|\s+FINAL_HEAD:\s+[a-f0-9]{40}$/i, '')
       .replace(/;\s*ORIGINAL_PR:\s*#[1-9]\d* OPEN\/DRAFT -> Foodex_V2 ONLY; latest verified source HEAD [a-f0-9]{40}\. Previous worker WAITING_CI\/EDITING_RELEASED\. No peer-active file overlap, 26 other OPEN PRs inspected\.$/i, '')
       .replace(/;\s*PR #[1-9]\d* OPEN\/DRAFT → Foodex_V2 ONLY$/i, '')
+      .replace(/^(feat\/2706-v2-b2b-pricing-setup-readiness); ORIGINAL_PR: #[1-9]\d* OPEN\/DRAFT -> Foodex_V2 ONLY$/i, '$1')
       .replace(/;\s*EXACT_START_HEAD:\s*[a-f0-9]{40}$/i, '')
       .replace(/\s+\|\s+START_HEAD:\s+[a-f0-9]{40}$/i, '')
       .replace(/\s+\|\s+BASE Foodex_V2 ONLY$/i, '')
       // Issue #2844 has a verified historical destination annotation in
       // BRANCH. Only a whole canonical issue-scoped ref plus this exact
       // display suffix may be normalized; all other prose stays fail-closed.
-      .replace(/^((?:feat|feature|fix|test|chore|ci|docs|refactor|worker)\/[1-9]\d*-[A-Za-z0-9._-]+) -> Foodex_V2 ONLY$/, '$1');
+      .replace(/^((?:feat|feature|fix|test|chore|ci|docs|refactor|worker)\/[1-9]\d*-[A-Za-z0-9._-]+) -> Foodex_V2 ONLY$/, '$1')
+      // #2706's first published claim (#6941157113) used one exact display
+      // annotation before its original PR existed. Resolve ONLY that known
+      // phrase on the canonical branch; unknown notes and actual second refs
+      // still fail closed in decide() against live GitHub branches and PRs.
+      .replace(/^(feat\/2706-v2-b2b-pricing-setup-readiness) \(new Issue-scoped; no existing 2706 branch\/PR found\)$/, '$1');
     // Inlined PR identities are provenance constraints, not decoration.
     // Never turn conflicting explicit and annotated PR references into a pass.
     const claimedPr = explicitPr ? Number(explicitPr[1]) : null;

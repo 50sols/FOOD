@@ -2,7 +2,9 @@
 
 namespace Tests\Feature;
 
+use App\Domain\Pricing\B2bPriceResolver;
 use App\Models\B2bAccount;
+use App\Models\B2bCustomer;
 use App\Models\Customer;
 use App\Models\Role;
 use App\Models\User;
@@ -10,6 +12,7 @@ use Database\Seeders\CoreReferenceSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Laravel\Sanctum\Sanctum;
+use Symfony\Component\HttpKernel\Exception\HttpException;
 use Tests\TestCase;
 
 class B2bPricingTest extends TestCase
@@ -23,6 +26,16 @@ class B2bPricingTest extends TestCase
         $this->setPricingTiers($storeId, true);
         $admin = $this->userWithRole('B2B_ADMIN', 'pricing-admin@example.test');
         Sanctum::actingAs($admin);
+
+        // Valid Wholesale operators must receive structured 422 input errors
+        // for nested page-size selectors, not PHP coercion or a 500 response.
+        foreach (['ar', 'en'] as $locale) {
+            $admin->forceFill(['locale' => $locale])->save();
+            Sanctum::actingAs($admin->fresh());
+            $this->getJson('/api/v1/admin/b2b/prices?per_page%5B0%5D=2')
+                ->assertUnprocessable()
+                ->assertJsonValidationErrors(['per_page']);
+        }
 
         $this->putJson('/api/v1/admin/b2b/prices', ['price_tier_id' => $tierId, 'store_id' => $storeId, 'product_id' => $productId, 'unit_price' => 7.250, 'minimum_quantity' => 5, 'ordering_increment' => 5, 'pack_size' => 12, 'case_size' => 24, 'pack_label' => 'Case 12', 'retail_reference_price' => 9.500])->assertCreated();
         $this->assertDatabaseHas('audit_logs', ['event' => 'b2b.price_rule.saved']);
@@ -100,6 +113,373 @@ class B2bPricingTest extends TestCase
             ->assertJsonPath('items.0.ordering_increment', 5)
             ->assertJsonPath('items.0.pack_size', 12)
             ->assertJsonPath('subtotal', 36.25);
+    }
+
+    public function test_direct_pricing_rejects_dirty_or_unsaved_customer_identity_in_ar_and_en(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        [$storeId, $productId, $tierId] = $this->catalog();
+        $this->setPricingTiers($storeId, true);
+        DB::table('b2b_price_rules')->insert([
+            'price_tier_id' => $tierId,
+            'store_id' => $storeId,
+            'product_id' => $productId,
+            'unit_price' => 7.250,
+            'minimum_quantity' => 1,
+            'ordering_increment' => 1,
+            'pack_size' => 1,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $victimUser = User::query()->create([
+            'name' => 'Private Tier Owner',
+            'email' => 'pricing-identity-owner@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $victimLegacy = Customer::query()->create([
+            'user_id' => $victimUser->id,
+            'type' => 'b2b',
+            'name' => 'Private Tier Owner',
+            'email' => $victimUser->email,
+        ]);
+        $victim = B2bCustomer::query()->firstOrCreate(
+            ['legacy_customer_id' => $victimLegacy->id],
+            ['user_id' => $victimUser->id, 'name' => 'Private Tier Owner', 'email' => $victimUser->email],
+        );
+        B2bAccount::query()->create([
+            'customer_id' => $victimLegacy->id,
+            'b2b_customer_id' => $victim->id,
+            'price_tier_id' => $tierId,
+            'company_name' => 'Private Tier Company',
+            'status' => 'active',
+        ]);
+
+        $otherUser = User::query()->create([
+            'name' => 'Unrelated Pricing Caller',
+            'email' => 'pricing-identity-other@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $other = B2bCustomer::query()->create([
+            'user_id' => $otherUser->id,
+            'name' => 'Unrelated Pricing Caller',
+            'email' => $otherUser->email,
+        ]);
+        $originalOtherId = $other->getRawOriginal('id');
+        $this->assertNotSame((int) $victim->id, (int) $originalOtherId);
+        $other->setAttribute('id', $victim->id);
+        $unsaved = new B2bCustomer(['name' => 'Unpersisted Pricing Caller']);
+        $unsaved->setAttribute('id', $victim->id);
+
+        $pricing = app(B2bPriceResolver::class);
+        $beforeAudit = DB::table('audit_logs')->count();
+        $beforeOrders = DB::table('orders')->count();
+        $beforeMovements = DB::table('stock_movements')->count();
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $this->assertSame(7.25, $pricing->resolve($victim, $storeId, $productId)['price']);
+
+            foreach ([$other, $unsaved] as $untrusted) {
+                try {
+                    $pricing->resolve($untrusted, $storeId, $productId);
+                    $this->fail('An untrusted B2B customer identity must not resolve a foreign tier price.');
+                } catch (HttpException $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                }
+            }
+        }
+
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+        $this->assertSame($beforeOrders, DB::table('orders')->count());
+        $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
+        $this->assertSame((int) $originalOtherId, (int) $other->getRawOriginal('id'));
+        $this->assertSame(7.25, $pricing->resolve($victim, $storeId, $productId)['price']);
+    }
+
+    public function test_midquery_account_suspension_never_returns_private_tier_price_in_ar_and_en(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        [$storeId, $productId, $tierId] = $this->catalog();
+        $this->setPricingTiers($storeId, true);
+        DB::table('b2b_price_rules')->insert([
+            'price_tier_id' => $tierId,
+            'store_id' => $storeId,
+            'product_id' => $productId,
+            'unit_price' => 7.250,
+            'minimum_quantity' => 1,
+            'ordering_increment' => 1,
+            'pack_size' => 1,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $buyer = User::query()->create([
+            'name' => 'Postquery Revocation Buyer',
+            'email' => 'pricing-late-revoke@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $legacy = Customer::query()->create([
+            'user_id' => $buyer->id,
+            'type' => 'b2b',
+            'name' => 'Postquery Revocation Buyer',
+            'email' => $buyer->email,
+        ]);
+        $customer = B2bCustomer::query()->firstOrCreate(
+            ['legacy_customer_id' => $legacy->id],
+            ['user_id' => $buyer->id, 'name' => 'Postquery Revocation Buyer', 'email' => $buyer->email],
+        );
+        $account = B2bAccount::query()->create([
+            'customer_id' => $legacy->id,
+            'b2b_customer_id' => $customer->id,
+            'price_tier_id' => $tierId,
+            'company_name' => 'Postquery Revocation Company',
+            'status' => 'active',
+        ]);
+        $accountId = (int) $account->id;
+        $pricing = app(B2bPriceResolver::class);
+        $armed = false;
+        $injected = false;
+
+        // Laravel fires QueryExecuted only after the actual tier-rule SQL
+        // returns, but before the resolver serializes private account prices.
+        DB::listen(static function ($query) use ($accountId, &$armed, &$injected): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $injected || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'b2b_price_rules')) {
+                return;
+            }
+
+            $injected = true;
+            $armed = false;
+            DB::table('b2b_accounts')->where('id', $accountId)->update([
+                'status' => 'suspended',
+                'updated_at' => now(),
+            ]);
+        });
+
+        $beforeAudit = DB::table('audit_logs')->count();
+        $beforeOrders = DB::table('orders')->count();
+        $beforeMovements = DB::table('stock_movements')->count();
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $this->assertSame(7.25, $pricing->resolve($customer, $storeId, $productId)['price']);
+
+            $injected = false;
+            $armed = true;
+            try {
+                $pricing->resolve($customer, $storeId, $productId);
+                $this->fail('A suspended account must not receive a price after its tier SQL completed.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            } finally {
+                $armed = false;
+            }
+
+            $this->assertTrue($injected, 'Real tier-rule SELECT must trigger account suspension.');
+            $this->assertSame('suspended', DB::table('b2b_accounts')->where('id', $accountId)->value('status'));
+            try {
+                $pricing->resolve($customer, $storeId, $productId);
+                $this->fail('Persisted suspended account must remain denied.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            }
+
+            DB::table('b2b_accounts')->where('id', $accountId)->update([
+                'status' => 'active',
+                'updated_at' => now(),
+            ]);
+            $this->assertSame(7.25, $pricing->resolve($customer, $storeId, $productId)['price']);
+        }
+
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+        $this->assertSame($beforeOrders, DB::table('orders')->count());
+        $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
+    }
+
+    public function test_tier_disabled_after_rule_select_cannot_disclose_private_b2b_prices_in_ar_and_en(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        [$storeId, $productId, $tierId] = $this->catalog();
+        $this->setPricingTiers($storeId, true);
+        DB::table('b2b_price_rules')->insert([
+            'price_tier_id' => $tierId,
+            'store_id' => $storeId,
+            'product_id' => $productId,
+            'unit_price' => 7.250,
+            'minimum_quantity' => 1,
+            'ordering_increment' => 1,
+            'pack_size' => 1,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $buyer = User::query()->create([
+            'name' => 'Late Tier Revocation Buyer',
+            'email' => 'pricing-late-tier-revocation@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $legacy = Customer::query()->create([
+            'user_id' => $buyer->id,
+            'type' => 'b2b',
+            'name' => 'Late Tier Revocation Buyer',
+            'email' => $buyer->email,
+        ]);
+        $customer = B2bCustomer::query()->firstOrCreate(
+            ['legacy_customer_id' => $legacy->id],
+            ['user_id' => $buyer->id, 'name' => 'Late Tier Revocation Buyer', 'email' => $buyer->email],
+        );
+        B2bAccount::query()->create([
+            'customer_id' => $legacy->id,
+            'b2b_customer_id' => $customer->id,
+            'price_tier_id' => $tierId,
+            'company_name' => 'Late Tier Revocation Company',
+            'status' => 'active',
+        ]);
+
+        $resolver = app(B2bPriceResolver::class);
+        $armed = false;
+        $injected = false;
+        // Post-SELECT, same-connection deterministic interleaving. This
+        // proves late revocation handling, not a two-session isolation level.
+        DB::listen(static function ($query) use ($tierId, &$armed, &$injected): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $injected || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'b2b_price_rules')) {
+                return;
+            }
+
+            $injected = true;
+            $armed = false;
+            DB::table('b2b_price_tiers')->where('id', $tierId)->update([
+                'is_active' => false,
+                'updated_at' => now(),
+            ]);
+        });
+
+        $beforeAudit = DB::table('audit_logs')->count();
+        $beforeOrders = DB::table('orders')->count();
+        $beforeMovements = DB::table('stock_movements')->count();
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $this->assertSame(7.25, $resolver->resolve($customer, $storeId, $productId)['price']);
+
+            $injected = false;
+            $armed = true;
+            try {
+                $resolver->resolve($customer, $storeId, $productId);
+                $this->fail('A tier revoked after rule SELECT must not disclose its private price.');
+            } catch (HttpException $exception) {
+                $this->assertSame(403, $exception->getStatusCode());
+            } finally {
+                $armed = false;
+            }
+
+            $this->assertTrue($injected, 'The actual tier-rule query must trigger late tier revocation.');
+            $this->assertFalse((bool) DB::table('b2b_price_tiers')->where('id', $tierId)->value('is_active'));
+            try {
+                $resolver->resolve($customer, $storeId, $productId);
+                $this->fail('A persistently disabled tier must remain inaccessible.');
+            } catch (HttpException $exception) {
+                $this->assertSame(409, $exception->getStatusCode());
+            }
+
+            DB::table('b2b_price_tiers')->where('id', $tierId)->update([
+                'is_active' => true,
+                'updated_at' => now(),
+            ]);
+            $this->assertSame(7.25, $resolver->resolve($customer, $storeId, $productId)['price']);
+        }
+
+        $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+        $this->assertSame($beforeOrders, DB::table('orders')->count());
+        $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
+    }
+
+    public function test_revoked_wholesale_price_tier_cannot_price_customer_catalog_or_cart(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        [$storeId, $productId, $tierId] = $this->catalog();
+        $this->setPricingTiers($storeId, true);
+        DB::table('b2b_price_rules')->insert([
+            'price_tier_id' => $tierId,
+            'store_id' => $storeId,
+            'product_id' => $productId,
+            'unit_price' => 7.25,
+            'minimum_quantity' => 1,
+            'ordering_increment' => 1,
+            'pack_size' => 1,
+            'is_active' => true,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        $buyer = User::query()->create([
+            'name' => 'Revoked Tier Buyer',
+            'email' => 'revoked-tier-buyer@example.test',
+            'password' => 'password',
+            'is_active' => true,
+        ]);
+        $customer = Customer::query()->create([
+            'user_id' => $buyer->id,
+            'type' => 'b2b',
+            'name' => 'Revoked Tier Buyer',
+            'email' => $buyer->email,
+        ]);
+        B2bAccount::query()->create([
+            'customer_id' => $customer->id,
+            'price_tier_id' => $tierId,
+            'company_name' => 'Revoked Tier Buyer Co',
+            'status' => 'active',
+        ]);
+        Sanctum::actingAs($buyer);
+
+        $list = "/api/v1/b2b/products?store_id={$storeId}";
+        $detail = "/api/v1/b2b/products/{$productId}?store_id={$storeId}";
+        $this->getJson($list)->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.unit_price', 7.25);
+        $this->getJson($detail)->assertOk()->assertJsonPath('account_price', 7.25);
+
+        $auditBefore = DB::table('audit_logs')->count();
+        $ordersBefore = DB::table('orders')->count();
+        $movementsBefore = DB::table('stock_movements')->count();
+
+        // Revocation of the parent tier must invalidate existing active
+        // rules without deleting the customer, mutating its account or
+        // accidentally falling back to the undiscounted wholesale price.
+        DB::table('b2b_price_tiers')->where('id', $tierId)
+            ->update(['is_active' => false]);
+        $this->getJson($list)->assertOk()->assertJsonCount(0, 'data');
+        $this->getJson($detail)->assertNotFound();
+        $this->postJson('/api/v1/cart/items', [
+            'store_id' => $storeId,
+            'product_id' => $productId,
+            'quantity' => 1,
+        ])->assertConflict();
+
+        $this->assertDatabaseHas('b2b_price_rules', [
+            'price_tier_id' => $tierId,
+            'store_id' => $storeId,
+            'product_id' => $productId,
+            'is_active' => true,
+        ]);
+        $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+        $this->assertSame($ordersBefore, DB::table('orders')->count());
+        $this->assertSame($movementsBefore, DB::table('stock_movements')->count());
+
+        DB::table('b2b_price_tiers')->where('id', $tierId)
+            ->update(['is_active' => true]);
+        $this->getJson($list)->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.unit_price', 7.25);
+        $this->getJson($detail)->assertOk()->assertJsonPath('account_price', 7.25);
     }
 
     public function test_pricing_tiers_are_off_by_default_and_base_price_is_authoritative(): void
@@ -254,6 +634,69 @@ class B2bPricingTest extends TestCase
 
         $this->getJson("/api/v1/b2b/products?store_id={$storeId}")->assertForbidden();
         $this->getJson("/api/v1/b2b/products/{$productId}?store_id={$storeId}")->assertForbidden();
+    }
+
+    public function test_wholesale_price_rule_api_checks_store_deny_before_pricing_field_validation(): void
+    {
+        $this->seed(CoreReferenceSeeder::class);
+        [$storeId, $productId, $tierId] = $this->catalog();
+        $this->setPricingTiers($storeId, true);
+        $admin = $this->userWithRole('B2B_ADMIN', 'pricing-store-deny@example.test');
+
+        $candidate = [
+            'store_id' => $storeId,
+            'price_tier_id' => $tierId,
+            'product_id' => $productId,
+            'unit_price' => 7.250,
+            'minimum_quantity' => 1,
+        ];
+        Sanctum::actingAs($admin);
+        // An in-scope operator still receives ordinary field validation.
+        $this->putJson('/api/v1/admin/b2b/prices', array_replace($candidate, [
+            'price_tier_id' => 'invalid-tier',
+            'unit_price' => 'not-a-price',
+        ]))->assertUnprocessable()
+            ->assertJsonValidationErrors(['price_tier_id', 'unit_price']);
+
+        $permissionId = (int) DB::table('permissions')->where('code', 'b2b.pricing.manage')->value('id');
+        $this->assertGreaterThan(0, $permissionId);
+        DB::table('user_permission_overrides')->insert([
+            'user_id' => $admin->id,
+            'permission_id' => $permissionId,
+            'scope_key' => 'store:'.$storeId,
+            'store_id' => $storeId,
+            'effect' => 'deny',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+        $admin->forceFill(['has_permission_overrides' => true])->save();
+
+        $this->assertTrue($admin->fresh()->hasPermission('b2b.pricing.manage'));
+        $this->assertFalse($admin->fresh()->hasPermission('b2b.pricing.manage', $storeId));
+        $beforeRules = DB::table('b2b_price_rules')->count();
+        $beforeAudit = DB::table('audit_logs')->count();
+
+        foreach (['ar', 'en'] as $locale) {
+            $admin->forceFill(['locale' => $locale])->save();
+            Sanctum::actingAs($admin->fresh());
+
+            // A forbidden store must not expose its tier/product/price errors.
+            $this->putJson('/api/v1/admin/b2b/prices', array_replace($candidate, [
+                'price_tier_id' => 'invalid-tier',
+                'product_id' => 'invalid-product',
+                'unit_price' => 'not-a-price',
+            ]))->assertNotFound();
+            $this->putJson('/api/v1/admin/b2b/prices', $candidate)->assertNotFound();
+            // A denied store must remain concealed even when nested schedule
+            // input would otherwise fail Laravel's array validation.
+            $this->putJson('/api/v1/admin/b2b/prices', array_replace($candidate, [
+                'quantity_price_breaks' => ['invalid-nested-break'],
+                'replace_quantity_price_breaks' => 'not-a-boolean',
+            ]))->assertNotFound();
+
+            $this->assertSame($beforeRules, DB::table('b2b_price_rules')->count());
+            $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+        }
     }
 
     public function test_wholesale_app_order_and_stock_only_setting_control_product_feed(): void
