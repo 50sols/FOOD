@@ -88,6 +88,15 @@ GENERATED_RUNTIME_DIRS = (
 PROTECTED_PARTS = {".git", "storage", "vendor"}
 FIXED_ZIP_TIME = (2026, 9, 27, 0, 0, 0)
 
+# The Update ZIP publisher must never advertise an archive that Laravel's
+# default Verify Package limits would reject after it reaches a shared host.
+# These limits match UpdatePackageValidator and config/foodex.php. The package
+# stays compatible with default deployments even when a source host permits
+# larger archives via environment overrides.
+MAX_UPDATE_ZIP_MEMBERS = 50_000
+MAX_UPDATE_ENTRY_UNCOMPRESSED_BYTES = 268_435_456
+MAX_UPDATE_TOTAL_UNCOMPRESSED_BYTES = 1_073_741_824
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build a deterministic FOODEX dashboard update bundle.")
@@ -904,6 +913,21 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
             members = archive.infolist()
             if [member.filename for member in members] != filenames:
                 raise RuntimeError("Update release file list does not match ZIP members.")
+
+            # Fail before decompression if a coherent ZIP+manifest exceeds the
+            # default limits enforced by Laravel's Verify Package runtime.
+            # Subtraction bounds the running total without integer overflow.
+            if len(members) > MAX_UPDATE_ZIP_MEMBERS:
+                raise RuntimeError("Update release ZIP exceeds runtime extraction budget: member count.")
+            expanded_bytes = 0
+            for member in members:
+                if (
+                    member.file_size < 0
+                    or member.file_size > MAX_UPDATE_ENTRY_UNCOMPRESSED_BYTES
+                    or member.file_size > MAX_UPDATE_TOTAL_UNCOMPRESSED_BYTES - expanded_bytes
+                ):
+                    raise RuntimeError("Update release ZIP exceeds runtime extraction budget: expanded size.")
+                expanded_bytes += member.file_size
 
             # Revalidate archive safety at the FINAL publication boundary.
             # Internally consistent sidecars can all be replaced together;

@@ -765,6 +765,54 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                         (output_dir / ".FOODEX-Update.publish.lock").exists()
                     )
 
+    def test_update_release_group_enforces_runtime_expansion_budgets_before_publish(self) -> None:
+        # Real Laravel Verify Package defaults reject >50k ZIP entries, >256 MiB
+        # per entry or >1 GiB cumulative expanded data. A coherent ZIP and
+        # SHA/manifest must fail BEFORE being advertised as installable.
+        # Tiny patched budgets exercise every limit without a decompression bomb.
+        variants = (
+            ("too_many_members", "MAX_UPDATE_ZIP_MEMBERS", 1),
+            ("oversized_member", "MAX_UPDATE_ENTRY_UNCOMPRESSED_BYTES", 20),
+            ("oversized_aggregate", "MAX_UPDATE_TOTAL_UNCOMPRESSED_BYTES", 45),
+        )
+        for attack, limit_name, limit in variants:
+            with self.subTest(attack=attack):
+                with tempfile.TemporaryDirectory() as temporary:
+                    output_dir = Path(temporary)
+                    staging, contents = self._staged_release_fixture(output_dir)
+                    items = (
+                        ("backend/artisan", b"<?php // staged reviewed Laravel CLI"),
+                        ("backend/config/foodex.php", b"<?php return [];"),
+                    )
+                    archive_bytes = io.BytesIO()
+                    with zipfile.ZipFile(archive_bytes, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                        for name, payload in items:
+                            archive.writestr(name, payload)
+                    zipped = archive_bytes.getvalue()
+                    digest = hashlib.sha256(zipped).hexdigest()
+                    manifest = json.loads(contents["FOODEX-Update.json"])
+                    manifest["sha256"] = digest
+                    manifest["delta"]["file_count"] = len(items)
+                    manifest["delta"]["source_file_count"] = len(items)
+                    contents["FOODEX-Update.json"] = (json.dumps(manifest) + "\n").encode("utf-8")
+                    contents["FOODEX-Update.files.txt"] = (
+                        "\n".join(name for name, _ in items) + "\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.sha256.txt"] = (
+                        f"{digest}  FOODEX-Update.zip\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.zip"] = zipped
+                    for name, data in contents.items():
+                        (staging / name).write_bytes(data)
+
+                    with mock.patch.object(builder, limit_name, limit):
+                        with self.assertRaisesRegex(RuntimeError, "runtime extraction budget"):
+                            builder.publish_release_bundle(staging, output_dir)
+                    for name, data in contents.items():
+                        self.assertFalse(os.path.lexists(output_dir / name), name)
+                        self.assertEqual((staging / name).read_bytes(), data)
+                    self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
+
     def test_update_release_group_rejects_coherent_corrupt_nonmirror_payload(self) -> None:
         # Manifest, SHA256 sidecar and filename list all match the modified
         # archive. Only its internal stored entry bytes are corrupt: the
