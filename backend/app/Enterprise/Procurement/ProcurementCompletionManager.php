@@ -1912,7 +1912,7 @@ final class ProcurementCompletionManager
             'renewal_of_id' => ['nullable', 'integer', 'min:1'],
         ])->validate();
 
-        return DB::transaction(function () use ($actor, $scope, $data): object {
+        return DB::transaction(function () use ($actor, $context, $scope, $data): object {
             // Serialize new agreements with module shutdown. The earlier
             // permission/preflight alone cannot protect the write transaction.
             $module = DB::table('enterprise_modules')
@@ -1924,6 +1924,12 @@ final class ProcurementCompletionManager
                 404,
                 'Procurement module is disabled.',
             );
+
+            // The caller's manage grant is a preflight only. Reauthorize the
+            // persisted actor inside the module-locked write transaction so
+            // offboarding or a DENY before this boundary cannot mutate data
+            // or produce an audit entry (including idempotent replays).
+            $this->scope($actor, $context, 'procurement.purchase_orders.manage');
 
             // Supplier qualification and legal scope are mutable after a
             // preflight. Lock the current row through creation and audit so
@@ -1985,7 +1991,7 @@ final class ProcurementCompletionManager
         // The same record-level SoD used by AP posting and Treasury payment
         // release applies to the supplier agreement itself. Serialize module
         // lifecycle before locking the agreement, matching RFQ transitions.
-        DB::transaction(function () use ($actor, $scope, $contractId): void {
+        DB::transaction(function () use ($actor, $context, $scope, $contractId): void {
             $module = DB::table('enterprise_modules')
                 ->where('code', 'procurement')
                 ->lockForUpdate()
@@ -1995,6 +2001,12 @@ final class ProcurementCompletionManager
                 404,
                 'Procurement module is disabled.',
             );
+
+            // The caller's manage grant is a preflight only. Reauthorize the
+            // persisted actor inside the module-locked write transaction so
+            // offboarding or a DENY before this boundary cannot mutate data
+            // or produce an audit entry (including idempotent replays).
+            $this->scope($actor, $context, 'procurement.purchase_orders.manage');
 
             $contract = $this->visibleContract($scope, $contractId, true);
             // Contracts remain local when a supplier's legal/store ownership
@@ -2042,7 +2054,7 @@ final class ProcurementCompletionManager
         // A locking SELECT outside a transaction releases its row lock before
         // the subsequent UPDATE in MySQL autocommit mode. Hold module and
         // contract locks through termination + audit in one real transaction.
-        DB::transaction(function () use ($actor, $scope, $contractId): void {
+        DB::transaction(function () use ($actor, $context, $scope, $contractId): void {
             $module = DB::table('enterprise_modules')
                 ->where('code', 'procurement')
                 ->lockForUpdate()
@@ -2052,6 +2064,12 @@ final class ProcurementCompletionManager
                 404,
                 'Procurement module is disabled.',
             );
+
+            // The caller's manage grant is a preflight only. Reauthorize the
+            // persisted actor inside the module-locked write transaction so
+            // offboarding or a DENY before this boundary cannot mutate data
+            // or produce an audit entry (including idempotent replays).
+            $this->scope($actor, $context, 'procurement.purchase_orders.manage');
 
             $contract = $this->visibleContract($scope, $contractId, true);
             // A moved supplier is no longer in the actor's legal/store scope,
@@ -2085,7 +2103,7 @@ final class ProcurementCompletionManager
         int $contractId,
     ): void {
         $scope = $this->scope($actor, $context, 'procurement.purchase_orders.manage');
-        DB::transaction(function () use ($actor, $scope, $orderId, $contractId): void {
+        DB::transaction(function () use ($actor, $context, $scope, $orderId, $contractId): void {
             // Scope authorization is an unlocked preflight. Serialize this
             // association with procurement shutdown before taking the order
             // and contract locks or mutating the canonical PO and audit.
@@ -2098,6 +2116,12 @@ final class ProcurementCompletionManager
                 404,
                 'Procurement module is disabled.',
             );
+
+            // The caller's manage grant is a preflight only. Reauthorize the
+            // persisted actor inside the module-locked write transaction so
+            // offboarding or a DENY before this boundary cannot mutate data
+            // or produce an audit entry (including idempotent replays).
+            $this->scope($actor, $context, 'procurement.purchase_orders.manage');
 
             $order = DB::table('enterprise_purchase_orders')
                 ->where('organization_id', $scope->organizationId)
@@ -2162,7 +2186,7 @@ final class ProcurementCompletionManager
             'blocked_reason' => ['nullable', 'string', 'max:2000', 'required_if:blocked,1'],
         ])->validate();
 
-        return DB::transaction(function () use ($actor, $scope, $supplierId, $data): EnterpriseSupplier {
+        return DB::transaction(function () use ($actor, $context, $scope, $supplierId, $data): EnterpriseSupplier {
             // The scoped module check is only a preflight. Serialize the
             // supplier governance mutation with procurement shutdown before
             // locking supplier state or writing any audit record.
@@ -2175,6 +2199,12 @@ final class ProcurementCompletionManager
                 404,
                 'Procurement module is disabled.',
             );
+
+            // The caller's manage grant is a preflight only. Reauthorize the
+            // persisted actor inside the module-locked write transaction so
+            // offboarding or a DENY before this boundary cannot mutate data
+            // or produce an audit entry (including idempotent replays).
+            $this->scope($actor, $context, 'procurement.suppliers.manage');
 
             $supplier = EnterpriseSupplier::query()
                 ->where('id', $supplierId)

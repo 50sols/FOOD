@@ -2284,6 +2284,160 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+
+    public function test_contract_lifecycle_and_supplier_governance_recheck_persisted_manage_deny_inside_transactions_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        $completion = app(ProcurementCompletionManager::class);
+        $directory = app(SupplierDirectory::class);
+        $orderPermissionId = Permission::query()
+            ->where('code', 'procurement.purchase_orders.manage')->firstOrFail()->id;
+        $supplierPermissionId = Permission::query()
+            ->where('code', 'procurement.suppliers.manage')->firstOrFail()->id;
+
+        $armed = false;
+        $injected = false;
+        $currentActor = null;
+        $currentPermissionId = null;
+        $baselineTransactionLevel = DB::transactionLevel();
+
+        // Insert a database-visible DENY only after the module-locked write
+        // transaction begins. A preflight-only grant must not authorize any
+        // of the five mutations. Same-connection deterministic interleaving,
+        // NOT evidence of two-session MySQL concurrency.
+        DB::listen(static function ($query) use (
+            &$armed, &$injected, &$currentActor, &$currentPermissionId, $baselineTransactionLevel
+        ): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $injected || $currentActor === null || $currentPermissionId === null
+                || DB::transactionLevel() <= $baselineTransactionLevel
+                || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_modules')) {
+                return;
+            }
+
+            $armed = false;
+            $injected = true;
+            DB::table('user_permission_overrides')->insert([
+                'user_id' => $currentActor->id,
+                'permission_id' => $currentPermissionId,
+                'scope_key' => 'global',
+                'store_id' => null,
+                'effect' => 'deny',
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+            DB::table('users')->where('id', $currentActor->id)
+                ->update(['has_permission_overrides' => true]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            [$actor, , $context] = $this->scopedUser(
+                $this->allPermissions(), 'P135-CONTRACT-WRITE-DENY-'.strtoupper($locale),
+            );
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'P135-WRITE-SUP-'.strtoupper($locale),
+                'name_en' => 'Contract late authority '.$locale,
+            ]);
+            [$checker, $checkerContext] = ProcurementSecondApprover::forSameStore($actor, $context);
+            $contractAttributes = [
+                'supplier_id' => $supplier->id,
+                'title' => 'Live authority agreement '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->subDay()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+            ];
+
+            $assertLateDeny = function (User $subject, int $permissionId, callable $mutation) use (
+                &$armed, &$injected, &$currentActor, &$currentPermissionId, $actor, $checker
+            ): void {
+                $beforeAudit = DB::table('audit_logs')->count();
+                $armed = true;
+                $injected = false;
+                $currentActor = $subject;
+                $currentPermissionId = $permissionId;
+                try {
+                    $mutation();
+                    $this->fail('A persisted manage DENY inside a write transaction must return 403.');
+                } catch (HttpException $exception) {
+                    $this->assertSame(403, $exception->getStatusCode());
+                } finally {
+                    $armed = false;
+                    $currentActor = null;
+                    $currentPermissionId = null;
+                }
+
+                $this->assertTrue($injected, 'The module-locked transaction must exercise the late DENY.');
+                $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+                // The simulated override was inserted in the transaction
+                // deliberately and rolls back with the refused write.
+                $this->assertFalse((bool) $subject->fresh()->has_permission_overrides);
+                $this->assertSame(0, DB::table('user_permission_overrides')
+                    ->where('user_id', $subject->id)->where('permission_id', $permissionId)->count());
+            };
+
+            $beforeContracts = DB::table('enterprise_procurement_contracts')->count();
+            $assertLateDeny($actor, $orderPermissionId, static function () use (
+                $completion, $actor, $context, $contractAttributes
+            ): void {
+                $completion->createContract($actor, $context, $contractAttributes);
+            });
+            $this->assertSame($beforeContracts, DB::table('enterprise_procurement_contracts')->count());
+            $contract = $completion->createContract($actor, $context, $contractAttributes);
+
+            $assertLateDeny($checker, $orderPermissionId, static function () use (
+                $completion, $checker, $checkerContext, $contract
+            ): void {
+                $completion->activateContract($checker, $checkerContext, $contract->id);
+            });
+            $this->assertSame('draft', DB::table('enterprise_procurement_contracts')
+                ->where('id', $contract->id)->value('status'));
+            $completion->activateContract($checker, $checkerContext, $contract->id);
+
+            $order = $this->approvedOrder($actor, $context, $supplier->id, 1, 2.000);
+            $assertLateDeny($actor, $orderPermissionId, static function () use (
+                $completion, $actor, $context, $order, $contract
+            ): void {
+                $completion->assignContractToOrder($actor, $context, $order->id, $contract->id);
+            });
+            $this->assertNull(DB::table('enterprise_purchase_orders')
+                ->where('id', $order->id)->value('contract_id'));
+            $completion->assignContractToOrder($actor, $context, $order->id, $contract->id);
+            $this->assertSame((int) $contract->id, (int) DB::table('enterprise_purchase_orders')
+                ->where('id', $order->id)->value('contract_id'));
+
+            $assertLateDeny($actor, $orderPermissionId, static function () use (
+                $completion, $actor, $context, $contract
+            ): void {
+                $completion->terminateContract($actor, $context, $contract->id);
+            });
+            $this->assertSame('active', DB::table('enterprise_procurement_contracts')
+                ->where('id', $contract->id)->value('status'));
+            $completion->terminateContract($actor, $context, $contract->id);
+
+            $beforeSupplier = DB::table('enterprise_suppliers')->where('id', $supplier->id)->firstOrFail();
+            $governance = [
+                'qualification_status' => 'unqualified',
+                'blocked' => true,
+                'blocked_reason' => 'Security test',
+            ];
+            $assertLateDeny($actor, $supplierPermissionId, static function () use (
+                $completion, $actor, $context, $supplier, $governance
+            ): void {
+                $completion->updateSupplierGovernance($actor, $context, $supplier->id, $governance);
+            });
+            $this->assertSame($beforeSupplier->status, DB::table('enterprise_suppliers')
+                ->where('id', $supplier->id)->value('status'));
+            $this->assertSame($beforeSupplier->qualification_status, DB::table('enterprise_suppliers')
+                ->where('id', $supplier->id)->value('qualification_status'));
+            $completion->updateSupplierGovernance($actor, $context, $supplier->id, $governance);
+            $this->assertSame('on_hold', DB::table('enterprise_suppliers')
+                ->where('id', $supplier->id)->value('status'));
+        }
+    }
+
     public function test_contract_activation_assignment_and_termination_deny_moved_supplier_without_writes_in_ar_and_en(): void
     {
         $this->enableProcurement();
