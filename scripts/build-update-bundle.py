@@ -984,7 +984,6 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
             or int.from_bytes(zip_ending[8:10], "little") != len(filenames)
             or int.from_bytes(zip_ending[10:12], "little") != len(filenames)
             or zip_ending[20:22] != b"\x00\x00"
-            or central_offset + central_size != archive_path.stat().st_size - 22
         ):
             raise RuntimeError("Inconsistent Update release ZIP end-directory metadata.")
         with zipfile.ZipFile(archive_path) as archive:
@@ -1001,6 +1000,8 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
             # were coherently replaced and every declared member still reads.
             if not members or min(member.header_offset for member in members) != 0:
                 raise RuntimeError("Undeclared Update release ZIP leading payload.")
+            if central_offset + central_size != archive_path.stat().st_size - 22:
+                raise RuntimeError("Inconsistent Update release ZIP end-directory metadata.")
             if [member.filename for member in members] != filenames:
                 raise RuntimeError("Update release file list does not match ZIP members.")
             # This must agree with UpdatePackageValidator::validateArchive:
