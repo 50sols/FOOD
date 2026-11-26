@@ -309,6 +309,28 @@ final class InventoryOwnershipRuleService
             return ['state' => 'UNKNOWN', 'certified' => false, 'policy' => null];
         }
 
+        if (! $ambiguous && $first !== null) {
+            // The selected policy is a cached SQL result, not a durable
+            // approval. A revocation, future effective date or mutation after
+            // the first SELECT must not disclose stale legal-title guidance.
+            // Re-read the exact row and compare its complete original
+            // snapshot; SHA-256 alone is not issuer authentication.
+            $originalPolicy = $first['rule'];
+            $currentPolicy = DB::table('enterprise_inventory_ownership_rule_revisions')
+                ->where('id', $originalPolicy->id)
+                ->where('company_id', $companyId)
+                ->where('store_id', $storeId)
+                ->where('channel', $channel)
+                ->where('status', 'APPROVED_RULE')
+                ->where('effective_at', '<=', now())
+                ->first();
+            abort_unless(
+                $currentPolicy !== null && (array) $currentPolicy === (array) $originalPolicy,
+                404,
+                'Ownership policy changed during advisory retrieval.',
+            );
+        }
+
         return ['state' => $ambiguous ? 'CONFLICT' : 'UNKNOWN', 'certified' => false,
             'policy' => $ambiguous ? null : ($first['rule'] ?? null)];
     }

@@ -2612,6 +2612,68 @@ SQL);
         $this->assertFalse($advisory['certified']);
         $this->assertSame($approved->id, $advisory['policy']->id);
 
+        // The approved policy itself can be revoked, moved into the future,
+        // or edited AFTER its original scoped SELECT. Revalidate the exact
+        // current record before returning the cached legal-title metadata.
+        $policyToMutate = null;
+        $policyColumn = null;
+        $policyValue = null;
+        $policyChanged = false;
+        DB::listen(static function ($query) use (&$policyToMutate, &$policyColumn, &$policyValue, &$policyChanged): void {
+            if ($policyToMutate === null || $policyChanged) {
+                return;
+            }
+
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_inventory_ownership_rule_revisions')
+                || ! str_contains($sql, 'effective_at')) {
+                return;
+            }
+
+            $policyChanged = true;
+            DB::table('enterprise_inventory_ownership_rule_revisions')
+                ->where('id', $policyToMutate)->update([$policyColumn => $policyValue]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach ([
+                ['status', 'REJECTED'],
+                ['effective_at', now()->addDays(10)->toDateTimeString()],
+                ['title_transfer_trigger', 'NONE'],
+            ] as [$column, $value]) {
+                $originalPolicy = DB::table('enterprise_inventory_ownership_rule_revisions')
+                    ->where('id', $approved->id)->firstOrFail();
+                $auditBefore = DB::table('audit_logs')->count();
+                $movementsBefore = DB::table('stock_movements')->count();
+                $policyColumn = $column;
+                $policyValue = $value;
+                $policyChanged = false;
+                $policyToMutate = (int) $approved->id;
+
+                try {
+                    $service->advisoryFor($checker, $stock['store_id'], 'B2C', null, (int) $request['warehouse_id']);
+                    $this->fail('An approval or policy snapshot changed after SELECT must fail closed: '.$column);
+                } catch (HttpException $exception) {
+                    $this->assertSame(404, $exception->getStatusCode());
+                } finally {
+                    $policyToMutate = null;
+                }
+
+                $this->assertTrue($policyChanged, 'A real approved-policy SELECT must trigger late mutation.');
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                $this->assertSame($movementsBefore, DB::table('stock_movements')->count());
+                DB::table('enterprise_inventory_ownership_rule_revisions')
+                    ->where('id', $approved->id)->update([$column => $originalPolicy->$column]);
+                $restored = $service->advisoryFor(
+                    $checker, $stock['store_id'], 'B2C', null, (int) $request['warehouse_id'],
+                );
+                $this->assertSame($approved->id, $restored['policy']->id);
+                $this->assertFalse($restored['certified']);
+            }
+        }
+
         // A Super Admin removed during the selected approved-policy query must
         // not receive a cached legal-title rule, even with a stale active model.
         $armedCheckerId = null;
