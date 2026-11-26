@@ -1046,6 +1046,42 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
                         f"Unsupported Update release ZIP compression method: {canonical}"
                     )
 
+            # Central-directory metadata and the SHA do not account for
+            # arbitrary bytes inside the physical ZIP envelope. Python can
+            # read a coherent ZIP with padding before its central directory
+            # or local-only extra fields that are absent from ZipInfo.extra.
+            # Our deterministic producer writes contiguous local headers,
+            # no data descriptors and no local extra fields. Require that
+            # exact layout before marking the staged ZIP publishable.
+            next_offset = 0
+            with archive_path.open("rb") as physical_zip:
+                for member in members:
+                    if member.header_offset != next_offset:
+                        raise RuntimeError("Undeclared Update release ZIP interior payload.")
+                    physical_zip.seek(member.header_offset)
+                    header = physical_zip.read(30)
+                    if (
+                        len(header) != 30
+                        or header[:4] != b"PK\x03\x04"
+                        or int.from_bytes(header[6:8], "little") != member.flag_bits
+                        or int.from_bytes(header[8:10], "little") != member.compress_type
+                    ):
+                        raise RuntimeError("Undeclared Update release ZIP interior payload.")
+                    name_length = int.from_bytes(header[26:28], "little")
+                    extra_length = int.from_bytes(header[28:30], "little")
+                    if (
+                        extra_length
+                        or (member.flag_bits & 0x08)
+                        or physical_zip.read(name_length) != member.filename.encode("ascii")
+                    ):
+                        raise RuntimeError("Undeclared Update release ZIP interior payload.")
+                    next_offset += 30 + name_length + member.compress_size
+                # EOCD is already pinned to the last 22 bytes; ZIP64 is not
+                # needed within the earlier bounded extraction budgets.
+                central_offset = int.from_bytes(zip_ending[16:20], "little")
+                if next_offset != central_offset:
+                    raise RuntimeError("Undeclared Update release ZIP interior payload.")
+
             # A coherent ZIP+SHA256 sidecar does not prove that every
             # compressed member can be decoded. Read ALL members to EOF so
             # zipfile checks DEFLATE/CRC integrity before any publication.

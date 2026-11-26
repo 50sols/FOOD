@@ -919,6 +919,69 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                         (output_dir / ".FOODEX-Update.publish.lock").exists()
                     )
 
+    def test_update_release_group_rejects_unlisted_local_zip_bytes(self) -> None:
+        # Rehash every altered ZIP and its manifest/sidecars. Both local-only
+        # extra data and a central-directory gap are readable by Python while
+        # the central directory lists no extra fields or additional members.
+        for variant in ("canonical", "local_only_extra", "central_directory_gap"):
+            with self.subTest(variant=variant):
+                with tempfile.TemporaryDirectory() as directory:
+                    output_dir = Path(directory)
+                    staging, contents = self._staged_release_fixture(output_dir)
+                    physical = bytearray(contents["FOODEX-Update.zip"])
+                    original_central_offset = int.from_bytes(physical[-6:-2], "little")
+                    injected = b""
+                    if variant == "local_only_extra":
+                        injected = b"\xfe\xca\x04\x00HIDE"
+                        local_filename_length = int.from_bytes(physical[26:28], "little")
+                        insertion_at = 30 + local_filename_length
+                        physical[insertion_at:insertion_at] = injected
+                        physical[28:30] = len(injected).to_bytes(2, "little")
+                    elif variant == "central_directory_gap":
+                        injected = b"UNLISTED-CENTRAL-DIRECTORY-GAP"
+                        physical[original_central_offset:original_central_offset] = injected
+
+                    if injected:
+                        eocd_offset = len(physical) - 22
+                        physical[eocd_offset + 16:eocd_offset + 20] = (
+                            original_central_offset + len(injected)
+                        ).to_bytes(4, "little")
+                    changed_archive = bytes(physical)
+                    with zipfile.ZipFile(io.BytesIO(changed_archive)) as archive:
+                        self.assertEqual(archive.namelist(), ["backend/artisan"])
+                        self.assertEqual(
+                            archive.read("backend/artisan"),
+                            b"<?php // staged reviewed Laravel CLI",
+                        )
+                        self.assertEqual(archive.infolist()[0].extra, b"")
+
+                    digest = hashlib.sha256(changed_archive).hexdigest()
+                    manifest = json.loads(contents["FOODEX-Update.json"])
+                    manifest["sha256"] = digest
+                    contents["FOODEX-Update.json"] = (
+                        json.dumps(manifest) + "\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.sha256.txt"] = (
+                        f"{digest}  FOODEX-Update.zip\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.zip"] = changed_archive
+                    for name, value in contents.items():
+                        (staging / name).write_bytes(value)
+
+                    if variant == "canonical":
+                        builder.publish_release_bundle(staging, output_dir)
+                        for name, value in contents.items():
+                            self.assertEqual((output_dir / name).read_bytes(), value)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "ZIP interior payload"):
+                            builder.publish_release_bundle(staging, output_dir)
+                        for name, value in contents.items():
+                            self.assertFalse(os.path.lexists(output_dir / name), name)
+                            self.assertEqual((staging / name).read_bytes(), value)
+                    self.assertFalse(
+                        (output_dir / ".FOODEX-Update.publish.lock").exists()
+                    )
+
     def test_update_release_group_refuses_undeclared_zip_prefix(self) -> None:
         # zipfile deliberately supports ZIPs with an executable/data prefix,
         # adjusting member offsets so all declared members still read. The
