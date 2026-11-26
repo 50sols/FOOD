@@ -1159,6 +1159,48 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                 self.assertFalse(os.path.lexists(output_dir / name))
             self.assertFalse(lock.exists())
 
+    def test_complete_update_release_rejects_linked_output_and_parent_aliases(self) -> None:
+        # A canonical staging leaf must not make a symlinked *destination*
+        # safe. Without this fence the four release hardlinks can be written
+        # into the alias target instead of the selected output directory.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            real_parent = root / "real-parent"
+            output_dir = real_parent / "releases"
+            output_dir.mkdir(parents=True)
+            staging, original = self._staged_release_fixture(output_dir)
+            aliased_output = root / "linked-output"
+            aliased_parent = root / "linked-parent"
+            try:
+                aliased_output.symlink_to(output_dir, target_is_directory=True)
+                aliased_parent.symlink_to(real_parent, target_is_directory=True)
+            except (OSError, NotImplementedError):
+                self.skipTest("Directory symlinks unavailable")
+
+            for candidate in (aliased_output, aliased_parent / "releases"):
+                with self.subTest(destination=str(candidate)):
+                    with self.assertRaisesRegex(RuntimeError, "Unsafe Update release output directory"):
+                        builder.publish_release_bundle(staging, candidate)
+                    for name in original:
+                        self.assertFalse(os.path.lexists(output_dir / name), name)
+                    self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
+
+            # A linked *staging parent* is also unsafe even if the staging
+            # leaf itself is a normal directory and the output is canonical.
+            with self.assertRaisesRegex(RuntimeError, "Unsafe Update release staging directory"):
+                builder.publish_release_bundle(
+                    aliased_parent / "releases" / "private-build", output_dir
+                )
+            self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
+            for name in original:
+                self.assertFalse(os.path.lexists(output_dir / name), name)
+
+            # Normal canonical release publication must remain functional.
+            builder.publish_release_bundle(staging, output_dir)
+            for name, content in original.items():
+                self.assertEqual((output_dir / name).read_bytes(), content)
+            self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
+
     def test_update_zip_refuses_existing_output_without_staging(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repo"

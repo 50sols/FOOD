@@ -1037,6 +1037,34 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
         raise RuntimeError("Update release staged artifact consistency check failed.") from exc
 
 
+def assert_unlinked_release_directory(directory: Path, label: str) -> None:
+    """Refuse symlinked release directories and linked ancestor aliases.
+
+    A clean private staging *leaf* does not make its output directory safe: an
+    ancestor link redirects all later publication hardlinks outside the
+    intended release root. Check every existing component without following
+    symlinks. Reject parent traversal spelling rather than normalizing an
+    alias away; caller must still protect the directory from concurrent
+    writers at the host ACL boundary.
+    """
+    if ".." in directory.parts:
+        raise RuntimeError(f"Unsafe Update release {label} directory.")
+    candidate = Path(os.path.abspath(directory))
+    while True:
+        try:
+            metadata = candidate.lstat()
+        except FileNotFoundError:
+            pass  # Preflight permits the future output leaf, not linked parents.
+        except OSError as exc:
+            raise RuntimeError(f"Unsafe Update release {label} directory.") from exc
+        else:
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise RuntimeError(f"Unsafe Update release {label} directory.")
+        if candidate == candidate.parent:
+            break
+        candidate = candidate.parent
+
+
 def publish_release_bundle(staging_dir: Path, output_dir: Path) -> None:
     """Publish all verified sidecars first; the ZIP is the last release marker.
 
@@ -1051,6 +1079,8 @@ def publish_release_bundle(staging_dir: Path, output_dir: Path) -> None:
         "FOODEX-Update.sha256.txt",
         "FOODEX-Update.zip",
     )
+    assert_unlinked_release_directory(output_dir, "output")
+    assert_unlinked_release_directory(staging_dir, "staging")
     if staging_dir.is_symlink() or not staging_dir.is_dir():
         raise RuntimeError("Unsafe Update release staging directory.")
     staged_paths = [staging_dir / name for name in names]
@@ -1170,7 +1200,11 @@ def main() -> int:
     contains_migrations = bool(migrations)
 
     output_dir = repo_root / args.output_dir
+    # Refuse output-directory aliases BEFORE creating any temporary staged
+    # release, then recheck after mkdir and again under the publisher lock.
+    assert_unlinked_release_directory(output_dir, "output")
     output_dir.mkdir(parents=True, exist_ok=True)
+    assert_unlinked_release_directory(output_dir, "output")
 
     with tempfile.TemporaryDirectory(prefix=".foodex-update-build-", dir=output_dir) as staging_name:
         staging_dir = Path(staging_name)
