@@ -241,6 +241,23 @@ final class InventoryOwnerProvenanceReadService
             ->get();
         abort_unless($rows->toJson() === $currentRows->toJson(), 404);
 
+        // A final unchanged stock/owner snapshot is NOT proof the independent
+        // signed legal-title authority remains valid. Its trusted signer may
+        // have been revoked, the independent checker offboarded, or the
+        // private source document altered after the initial signature check
+        // without modifying inventory or owner-position rows. Reverify every
+        // initially certified owner immediately before disclosing CERTIFIED.
+        // This is a bounded last-read guard, not a serializable filesystem/
+        // database transaction or an external legal-title attestation.
+        if ($certified) {
+            foreach ($rows as $row) {
+                abort_unless(
+                    $this->titleProof->verifies($inventory, $row, (int) $warehouse->store_id),
+                    404,
+                );
+            }
+        }
+
         // The final owner-position SELECT itself can race a persisted DENY.
         // Reauthorize the same original active principal after that read,
         // before supplier identity or legal-stock quantities are disclosed.

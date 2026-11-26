@@ -3508,6 +3508,80 @@ SQL);
         $this->assertSame('SUPPLIER', $certified['positions'][0]['owner_kind']);
         $this->assertSame($supplierId, $certified['positions'][0]['supplier_id']);
 
+        // The first proof check precedes the final owner-position SELECT.
+        // A legal signer revocation, independent checker offboarding, or
+        // private document change at that exact SELECT must not return an
+        // already-computed CERTIFIED state even when owner/stock stay equal.
+        // Each listener has its own state object: an older AR/EN callback
+        // cannot be accidentally rearmed by the next test iteration.
+        $beforeOwner = (array) DB::table('enterprise_inventory_owner_positions')
+            ->where('id', $position->id)->first();
+        $beforeAttestation = (array) DB::table('enterprise_inventory_title_attestations')
+            ->where('owner_position_id', $position->id)->first();
+        $beforeAudit = DB::table('audit_logs')->count();
+        $beforeMovements = DB::table('stock_movements')->count();
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            foreach (['signer_revoked', 'checker_offboarded', 'document_tampered'] as $attack) {
+                $race = (object) ['armed' => true, 'selects' => 0, 'injected' => false];
+                DB::listen(static function ($query) use ($race, $attack, $checker, $path, $bytes): void {
+                    if (! $race->armed) {
+                        return;
+                    }
+
+                    $sql = strtolower((string) $query->sql);
+                    if (! str_contains($sql, 'select')
+                        || ! str_contains($sql, 'enterprise_inventory_owner_positions')) {
+                        return;
+                    }
+
+                    $race->selects++;
+                    if ($race->selects !== 2) {
+                        return;
+                    }
+
+                    $race->armed = false;
+                    $race->injected = true;
+                    if ($attack === 'signer_revoked') {
+                        config()->set('enterprise_inventory_title.revoked_key_ids', ['test-supplier-issuer']);
+                    } elseif ($attack === 'checker_offboarded') {
+                        DB::table('users')->where('id', $checker->id)->update(['is_active' => false]);
+                    } else {
+                        Storage::disk('local')->put($path, $bytes.'-tampered-after-proof');
+                    }
+                });
+
+                try {
+                    $read->snapshot($actor, $stock['inventory_id']);
+                    $this->fail('A signed legal title invalidated after the first proof must not remain CERTIFIED.');
+                } catch (HttpException $exception) {
+                    $this->assertSame(404, $exception->getStatusCode());
+                } finally {
+                    $race->armed = false;
+                }
+                $this->assertTrue($race->injected, $locale.' '.$attack);
+                $this->assertSame(2, $race->selects);
+
+                if ($attack === 'signer_revoked') {
+                    config()->set('enterprise_inventory_title.revoked_key_ids', []);
+                } elseif ($attack === 'checker_offboarded') {
+                    DB::table('users')->where('id', $checker->id)->update(['is_active' => true]);
+                } else {
+                    Storage::disk('local')->put($path, $bytes);
+                }
+
+                $this->assertSame($beforeOwner, (array) DB::table('enterprise_inventory_owner_positions')
+                    ->where('id', $position->id)->first());
+                $this->assertSame($beforeAttestation, (array) DB::table('enterprise_inventory_title_attestations')
+                    ->where('owner_position_id', $position->id)->first());
+                $this->assertSame($beforeAudit, DB::table('audit_logs')->count());
+                $this->assertSame($beforeMovements, DB::table('stock_movements')->count());
+                $restored = $read->snapshot($actor, $stock['inventory_id']);
+                $this->assertSame('CERTIFIED', $restored['state']);
+                $this->assertTrue($restored['positions'][0]['certified']);
+            }
+        }
+
         // The supplier's organization_id and company_id have independent
         // foreign keys. Changing only organization_id must not preserve
         // historically signed SUPPLIER legal title for a different tenant.
