@@ -1554,19 +1554,46 @@ final class ProcurementCompletionManager
             ])
             ->all();
 
-        // Selected option rows may change store AFTER their scoped SELECT.
-        // Recheck the bounded IDs before returning request numbers/currency.
-        $requestIds = array_map(static fn ($request): int => (int) $request->id, $requests);
-        if ($requestIds !== []) {
+        // Selection eligibility is mutable independently of tenant ownership:
+        // an RFQ may be attached, status withdrawn or displayed number/currency
+        // changed AFTER the first scoped SELECT. Count-only scope checks would
+        // return a stale, no-longer-selectable commercial source request.
+        $snapshot = collect($requests)->mapWithKeys(static fn ($request): array => [
+            (int) $request->id => [
+                'request_number' => (string) $request->request_number,
+                'status' => (string) $request->status,
+                'currency_code' => (string) $request->currency_code,
+                'needed_by' => $request->needed_by === null ? null : (string) $request->needed_by,
+            ],
+        ])->sortKeys()->all();
+        if ($snapshot !== []) {
+            $current = DB::table('enterprise_purchase_requests as requests')
+                ->leftJoin('enterprise_procurement_rfqs as rfqs', 'rfqs.purchase_request_id', '=', 'requests.id')
+                ->where('requests.organization_id', $scope->organizationId)
+                ->where('requests.company_id', $scope->companyId)
+                ->where('requests.store_id', $scope->storeId)
+                ->whereIn('requests.status', ['submitted', 'approved'])
+                ->whereNull('rfqs.id')
+                ->whereIn('requests.id', array_keys($snapshot))
+                ->get([
+                    'requests.id',
+                    'requests.request_number',
+                    'requests.status',
+                    'requests.currency_code',
+                    'requests.needed_by',
+                ])
+                ->mapWithKeys(static fn ($request): array => [
+                    (int) $request->id => [
+                        'request_number' => (string) $request->request_number,
+                        'status' => (string) $request->status,
+                        'currency_code' => (string) $request->currency_code,
+                        'needed_by' => $request->needed_by === null ? null : (string) $request->needed_by,
+                    ],
+                ])->sortKeys()->all();
             abort_unless(
-                DB::table('enterprise_purchase_requests')
-                    ->where('organization_id', $scope->organizationId)
-                    ->where('company_id', $scope->companyId)
-                    ->where('store_id', $scope->storeId)
-                    ->whereIn('id', $requestIds)
-                    ->count() === count($requestIds),
+                $current === $snapshot,
                 404,
-                'Purchase-request ownership changed during option lookup.',
+                'Purchase-request eligibility or selection details changed during option lookup.',
             );
         }
 

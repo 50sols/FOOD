@@ -4197,6 +4197,92 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_rfq_request_options_reject_late_eligibility_or_display_changes_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'P135-RFQ-OPTION-SNAPSHOT');
+        $completion = app(ProcurementCompletionManager::class);
+        $requests = app(PurchaseRequestManager::class);
+
+        $armed = false;
+        $injected = false;
+        $requestId = 0;
+        $column = '';
+        $replacement = null;
+        // Only an actual scoped joined option SELECT can trigger the
+        // post-read mutation. This is deterministic same-connection ordering,
+        // not independent two-connection MySQL race certification.
+        DB::listen(static function ($query) use (
+            &$armed, &$injected, &$requestId, &$column, &$replacement
+        ): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $injected || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_purchase_requests')
+                || ! str_contains($sql, 'enterprise_procurement_rfqs')
+                || ! str_contains($sql, 'order by')) {
+                return;
+            }
+
+            $armed = false;
+            $injected = true;
+            DB::table('enterprise_purchase_requests')->where('id', $requestId)
+                ->update([$column => $replacement]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $request = $requests->create($actor, $context, [
+                'currency_code' => 'KWD',
+                'reason' => 'RFQ option snapshot '.$locale,
+                'lines' => [[
+                    'item_code' => 'OPTION-SNAPSHOT-'.strtoupper($locale),
+                    'description' => 'Source request eligibility',
+                    'quantity' => 1,
+                    'unit' => 'each',
+                    'estimated_unit_cost' => 1.250,
+                ]],
+            ]);
+            $requests->submit($actor, $context, $request->id);
+            $requestId = (int) $request->id;
+            $read = static fn (): array => $completion->rfqRequestOptions($actor, $context);
+            $this->assertContains($requestId, array_map(
+                static fn ($row): int => (int) $row->id, $read(),
+            ));
+
+            foreach ([
+                'status' => 'draft',
+                'currency_code' => 'USD',
+                'request_number' => 'CHANGED-'.strtoupper($locale),
+                'needed_by' => now()->addDays(4)->toDateString(),
+            ] as $field => $changedValue) {
+                $previousValue = DB::table('enterprise_purchase_requests')
+                    ->where('id', $requestId)->value($field);
+                $auditBefore = DB::table('audit_logs')->count();
+                $column = $field;
+                $replacement = $changedValue;
+                $injected = false;
+                $armed = true;
+
+                try {
+                    $read();
+                    $this->fail('Stale RFQ option '.$field.' must be denied in '.$locale);
+                } catch (HttpException $exception) {
+                    $this->assertSame(404, $exception->getStatusCode());
+                } finally {
+                    $armed = false;
+                }
+
+                $this->assertTrue($injected, 'Original RFQ option SQL did not trigger the change.');
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                DB::table('enterprise_purchase_requests')
+                    ->where('id', $requestId)->update([$field => $previousValue]);
+                $this->assertContains($requestId, array_map(
+                    static fn ($row): int => (int) $row->id, $read(),
+                ));
+            }
+        }
+    }
+
     private function enableProcurement(): void
     {
         $lifecycle = app(ModuleLifecycleManager::class);
