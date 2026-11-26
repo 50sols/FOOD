@@ -2792,12 +2792,11 @@ final class ProcurementCompletionManager
                 ->whereDate('needed_by', '<', now()->toDateString())
                 ->count();
             $receiptVariance = $this->orderedNotReceivedCount($storeId, $organizationId, $companyId);
-            $expiring = DB::table('enterprise_procurement_contracts')
-                ->where('organization_id', $organizationId)
-                ->where('company_id', $companyId)
-                ->where('store_id', $storeId)
-                ->where('status', 'active')
-                ->whereBetween('ends_on', [now()->toDateString(), now()->addDays(30)->toDateString()])
+            // Exception summaries are financial disclosures too: a supplier
+            // transferred to another store must not leave an orphaned count.
+            $expiring = $this->scopedContractDashboardQuery($storeId, $organizationId, $companyId)
+                ->where('contracts.status', 'active')
+                ->whereBetween('contracts.ends_on', [now()->toDateString(), now()->addDays(30)->toDateString()])
                 ->count();
 
             $exceptions[] = ['key' => 'overdue_orders', 'count' => $overdue, 'tab' => 'orders'];

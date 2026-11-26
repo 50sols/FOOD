@@ -3667,8 +3667,9 @@ final class EnterpriseProcurementCompletionTest extends TestCase
             $dashboard = $completion->dashboard($actor, $context);
             $metric = collect($dashboard['kpis'])->firstWhere('key', 'contracts');
             $bucket = collect($dashboard['charts']['contract_expiry'])->firstWhere('label', '0-30');
+            $exception = collect($dashboard['exceptions'])->firstWhere('key', 'expiring_contracts');
 
-            return [(int) $metric['value'], (int) $metric['secondary'], (int) $bucket['value']];
+            return [(int) $metric['value'], (int) $metric['secondary'], (int) $bucket['value'], (int) $exception['count']];
         };
 
         foreach (['ar', 'en'] as $locale) {
@@ -3682,7 +3683,7 @@ final class EnterpriseProcurementCompletionTest extends TestCase
                 [$contract->contract_number],
                 array_column($readBridge(), 'contract_number'),
             );
-            $this->assertSame([1, 1, 1], $dashboardContracts());
+            $this->assertSame([1, 1, 1, 1], $dashboardContracts());
 
             $auditBefore = DB::table('audit_logs')->count();
             // A legacy contract may still point to a supplier whose current
@@ -3692,7 +3693,7 @@ final class EnterpriseProcurementCompletionTest extends TestCase
                 ->update(['store_id' => $foreignStore->id, 'scope_type' => 'store']);
             $this->assertSame([], $readReport());
             $this->assertSame([], $readBridge());
-            $this->assertSame([0, 0, 0], $dashboardContracts());
+            $this->assertSame([0, 0, 0, 0], $dashboardContracts());
             $this->assertSame($auditBefore, DB::table('audit_logs')->count());
 
             // Company-scoped supplier is intentionally visible to both
@@ -3707,7 +3708,7 @@ final class EnterpriseProcurementCompletionTest extends TestCase
                 [$contract->contract_number],
                 array_column($readBridge(), 'contract_number'),
             );
-            $this->assertSame([1, 1, 1], $dashboardContracts());
+            $this->assertSame([1, 1, 1, 1], $dashboardContracts());
 
             DB::table('enterprise_suppliers')->where('id', $supplier->id)
                 ->update(['scope_type' => 'store', 'store_id' => $store->id]);
@@ -3715,7 +3716,7 @@ final class EnterpriseProcurementCompletionTest extends TestCase
                 [$contract->contract_number],
                 array_column($readReport(), 'contract_number'),
             );
-            $this->assertSame([1, 1, 1], $dashboardContracts());
+            $this->assertSame([1, 1, 1, 1], $dashboardContracts());
             $this->assertSame($auditBefore, DB::table('audit_logs')->count());
         }
     }
