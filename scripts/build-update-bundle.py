@@ -807,6 +807,32 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
         if not filenames or len(set(filenames)) != len(filenames):
             raise RuntimeError("Update release file list is empty or contains duplicates.")
 
+        # A coherent ZIP, file list and SHA-256 can still be paired with a
+        # substituted, non-advancing or unattributable release manifest.
+        # Reject such metadata at the final publication boundary, not only
+        # when the original command-line arguments are parsed.
+        if manifest.get("available") is not True or manifest.get("requires_full_redeploy") is not False:
+            raise RuntimeError("Update release manifest is not publishable as a ZIP update.")
+        target = manifest.get("target_version")
+        minimum = manifest.get("minimum_current_version")
+        if not isinstance(target, str) or not isinstance(minimum, str):
+            raise RuntimeError("Update release manifest has invalid version metadata.")
+        validate_update_version_range(target, minimum)
+        for field in ("source_base", "source_commit"):
+            source_sha = manifest.get(field)
+            if not isinstance(source_sha, str) or re.fullmatch(r"[0-9a-f]{40}", source_sha) is None:
+                raise RuntimeError(f"Update release manifest has invalid {field} provenance.")
+        delta = manifest["delta"]
+        declared_count = delta.get("file_count")
+        source_count = delta.get("source_file_count")
+        if (
+            type(declared_count) is not int
+            or declared_count != len(filenames)
+            or type(source_count) is not int
+            or not 1 <= source_count <= declared_count
+        ):
+            raise RuntimeError("Update release manifest file counts do not match ZIP selection.")
+
         actual_hash = hashlib.sha256()
         with archive_path.open("rb") as binary:
             for chunk in iter(lambda: binary.read(1024 * 1024), b""):

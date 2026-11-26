@@ -408,8 +408,17 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                 json.dumps({
                     "package": "FOODEX-Update.zip",
                     "sha256": digest,
-                    "source_commit": "123",
-                    "delta": {"files_manifest": "FOODEX-Update.files.txt"},
+                    "available": True,
+                    "requires_full_redeploy": False,
+                    "target_version": "1.0.127",
+                    "minimum_current_version": "1.0.126",
+                    "source_base": "0" * 40,
+                    "source_commit": "1" * 40,
+                    "delta": {
+                        "files_manifest": "FOODEX-Update.files.txt",
+                        "file_count": 1,
+                        "source_file_count": 1,
+                    },
                 }) + "\n"
             ).encode("utf-8"),
             "FOODEX-Update.files.txt": b"backend/artisan\n",
@@ -453,6 +462,45 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                         self.assertFalse(os.path.lexists(output_dir / name), name)
                         self.assertEqual((staged / name).read_bytes(), modified[name])
                     self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
+
+    def test_update_release_group_rejects_coherent_invalid_manifest_metadata(self) -> None:
+        # The archive, file list, and ZIP digest remain valid; changing only
+        # release provenance, range or claimed file counts must block publish.
+        attacks = {
+            "not_available": lambda m: m.__setitem__("available", False),
+            "requires_redeploy": lambda m: m.__setitem__("requires_full_redeploy", True),
+            "missing_target": lambda m: m.pop("target_version"),
+            "invalid_version": lambda m: m.__setitem__("target_version", "1.0.127-beta"),
+            "nonadvancing_version": lambda m: m.__setitem__("target_version", "1.0.126"),
+            "downgrade": lambda m: m.__setitem__("target_version", "1.0.125"),
+            "invalid_source_sha": lambda m: m.__setitem__("source_commit", "untrusted"),
+            "missing_base_sha": lambda m: m.pop("source_base"),
+            "bad_file_count": lambda m: m["delta"].__setitem__("file_count", 2),
+            "bad_source_count": lambda m: m["delta"].__setitem__("source_file_count", 2),
+            "boolean_file_count": lambda m: m["delta"].__setitem__("file_count", True),
+        }
+        for attack, mutate in attacks.items():
+            with self.subTest(attack=attack):
+                with tempfile.TemporaryDirectory() as directory:
+                    output_dir = Path(directory)
+                    staging, original = self._staged_release_fixture(output_dir)
+                    manifest = json.loads(original["FOODEX-Update.json"])
+                    mutate(manifest)
+                    modified = dict(original)
+                    modified["FOODEX-Update.json"] = (
+                        json.dumps(manifest) + "\n"
+                    ).encode("utf-8")
+                    (staging / "FOODEX-Update.json").write_bytes(
+                        modified["FOODEX-Update.json"]
+                    )
+                    with self.assertRaises(RuntimeError):
+                        builder.publish_release_bundle(staging, output_dir)
+                    for name, data in modified.items():
+                        self.assertFalse(os.path.lexists(output_dir / name), name)
+                        self.assertEqual((staging / name).read_bytes(), data)
+                    self.assertFalse(
+                        (output_dir / ".FOODEX-Update.publish.lock").exists()
+                    )
 
     def test_update_release_group_rejects_coherent_unsafe_zip_members(self) -> None:
         # All four sidecars are internally consistent (including SHA-256).
