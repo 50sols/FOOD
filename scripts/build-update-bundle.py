@@ -833,6 +833,16 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
         ):
             raise RuntimeError("Update release manifest file counts do not match ZIP selection.")
 
+        # Root-level static mirrors are output aliases, not separate source
+        # files. Require the declared source count to represent the actual
+        # canonical runtime inventory, not merely fall within a loose range.
+        # Both sides of the mirrored pair are checked against the ZIP below.
+        canonical_source_count = sum(
+            not name.startswith(PUBLIC_ROOT_MIRROR_PREFIXES) for name in filenames
+        )
+        if source_count != canonical_source_count:
+            raise RuntimeError("Update release manifest canonical source file count mismatch.")
+
         actual_hash = hashlib.sha256()
         with archive_path.open("rb") as binary:
             for chunk in iter(lambda: binary.read(1024 * 1024), b""):

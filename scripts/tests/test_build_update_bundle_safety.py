@@ -532,6 +532,8 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                     digest = hashlib.sha256(zipped).hexdigest()
                     manifest = json.loads(contents["FOODEX-Update.json"])
                     manifest["sha256"] = digest
+                    manifest["delta"]["file_count"] = 2
+                    manifest["delta"]["source_file_count"] = 2
                     contents["FOODEX-Update.json"] = (
                         json.dumps(manifest) + "\n"
                     ).encode("utf-8")
@@ -609,6 +611,10 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                 ("backend/public/assets/admin/status.css", b"safe-css"),
                 ("assets/admin/status.css", b"safe-css"),
             ), True),
+            ("wrong_source_count", (
+                ("backend/public/assets/admin/status.css", b"safe-css"),
+                ("assets/admin/status.css", b"safe-css"),
+            ), False),
         )
         for attack, assets, valid in variants:
             with self.subTest(attack=attack):
@@ -624,6 +630,14 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                     digest = hashlib.sha256(zipped).hexdigest()
                     manifest = json.loads(contents["FOODEX-Update.json"])
                     manifest["sha256"] = digest
+                    manifest["delta"]["file_count"] = 1 + len(assets)
+                    manifest["delta"]["source_file_count"] = 1 + sum(
+                        name.startswith("backend/public/") for name, _ in assets
+                    )
+                    if attack == "wrong_source_count":
+                        # Internally coherent archive and checksum with an
+                        # in-range but dishonest source inventory.
+                        manifest["delta"]["source_file_count"] = 1
                     contents["FOODEX-Update.json"] = (json.dumps(manifest) + "\n").encode("utf-8")
                     contents["FOODEX-Update.files.txt"] = (
                         "backend/artisan\n" + "".join(name + "\n" for name, _ in assets)
@@ -640,7 +654,7 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                         for name, body in contents.items():
                             self.assertEqual((output_dir / name).read_bytes(), body)
                     else:
-                        with self.assertRaisesRegex(RuntimeError, "public mirror"):
+                        with self.assertRaisesRegex(RuntimeError, "public mirror|source file count"):
                             builder.publish_release_bundle(staging, output_dir)
                         for name, body in contents.items():
                             self.assertFalse(os.path.lexists(output_dir / name), name)
