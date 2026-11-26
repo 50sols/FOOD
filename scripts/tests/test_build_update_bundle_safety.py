@@ -1325,6 +1325,50 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                 self.assertEqual((output_dir / name).read_bytes(), content)
             self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
 
+    def test_update_zip_builder_enforces_expansion_limits_before_staging(self) -> None:
+        # ZIP-last publication is too late to guard a hosted build worker:
+        # refuse excessive selected files before mkstemp/compression. Small
+        # real sources exercise member-count, entry and aggregate limits.
+        # The existing canonical builder must still accept exact boundaries.
+        cases = (
+            ("member_count", 1, 20, 40, False),
+            ("single_entry", 2, 19, 40, False),
+            ("expanded_total", 2, 20, 39, False),
+            ("at_exact_budget", 2, 20, 40, True),
+        )
+        for name, count, entry_size, total_size, allowed in cases:
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary) / "source"
+                    first = root / "backend/artisan"
+                    second = root / "backend/config/foodex.php"
+                    for candidate, value in ((first, b"A" * 20), (second, b"B" * 20)):
+                        candidate.parent.mkdir(parents=True, exist_ok=True)
+                        candidate.write_bytes(value)
+                    output = root / "dist" / "FOODEX-Update.zip"
+                    entries = [
+                        ("backend/artisan", "backend/artisan"),
+                        ("backend/config/foodex.php", "backend/config/foodex.php"),
+                    ]
+                    with mock.patch.object(builder, "MAX_UPDATE_ZIP_MEMBERS", count), \
+                         mock.patch.object(builder, "MAX_UPDATE_ENTRY_UNCOMPRESSED_BYTES", entry_size), \
+                         mock.patch.object(builder, "MAX_UPDATE_TOTAL_UNCOMPRESSED_BYTES", total_size):
+                        if allowed:
+                            builder.build_zip(root, entries, output)
+                            with zipfile.ZipFile(output) as archive:
+                                self.assertEqual(archive.namelist(), [name for name, _ in entries])
+                                self.assertEqual(archive.read("backend/artisan"), b"A" * 20)
+                                self.assertEqual(archive.read("backend/config/foodex.php"), b"B" * 20)
+                        else:
+                            with mock.patch.object(builder.tempfile, "mkstemp") as staging:
+                                with self.assertRaisesRegex(RuntimeError, "runtime extraction budget"):
+                                    builder.build_zip(root, entries, output)
+                                staging.assert_not_called()
+                            self.assertFalse(os.path.lexists(output))
+                            self.assertFalse(output.parent.exists())
+                    self.assertEqual(first.read_bytes(), b"A" * 20)
+                    self.assertEqual(second.read_bytes(), b"B" * 20)
+
     def test_update_zip_refuses_existing_output_without_staging(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "repo"

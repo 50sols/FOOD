@@ -590,6 +590,12 @@ def build_zip(repo_root: Path, entries: list[tuple[str, str]], output: Path) -> 
     # unbounded number of open descriptors while scanning a full Laravel tree.
     verified: list[tuple[str, str, os.stat_result]] = []
     folded_names: set[str] = set()
+    # Laravel's default Verify Package limits apply to expanded ZIP members.
+    # Reject oversized selected inputs BEFORE allocating a temporary archive
+    # or spending hosted runner resources compressing a doomed package.
+    if len(entries) > MAX_UPDATE_ZIP_MEMBERS:
+        raise RuntimeError("Update ZIP input exceeds runtime extraction budget: member count.")
+    expanded_bytes = 0
     for archive_name, source_relative in entries:
         canonical = safe_path(archive_name)
         if canonical != source_relative and (
@@ -601,7 +607,15 @@ def build_zip(repo_root: Path, entries: list[tuple[str, str]], output: Path) -> 
             raise RuntimeError(f"Ambiguous update member alias: {canonical}")
         folded_names.add(canonical.lower())
         reviewed = trusted_source_file(repo_root, source_relative)
-        verified.append((canonical, source_relative, reviewed.lstat()))
+        identity = reviewed.lstat()
+        if (
+            identity.st_size < 0
+            or identity.st_size > MAX_UPDATE_ENTRY_UNCOMPRESSED_BYTES
+            or identity.st_size > MAX_UPDATE_TOTAL_UNCOMPRESSED_BYTES - expanded_bytes
+        ):
+            raise RuntimeError("Update ZIP input exceeds runtime extraction budget: expanded size.")
+        expanded_bytes += identity.st_size
+        verified.append((canonical, source_relative, identity))
 
     # Rebuilding must never silently replace a previously validated/signed
     # release archive. Include dangling symlinks, which Path.exists() misses.
