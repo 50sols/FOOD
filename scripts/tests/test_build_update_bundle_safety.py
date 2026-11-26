@@ -867,6 +867,58 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                         (output_dir / ".FOODEX-Update.publish.lock").exists()
                     )
 
+    def test_update_release_group_rejects_unlisted_zip_metadata_before_publish(self) -> None:
+        # A rehashed ZIP + coherent manifest/SHA-256 sidecars can carry
+        # unlisted payload in archive comments, member comments, or extra
+        # fields. The first-party builder emits none; reject at ZIP-last
+        # publication while retaining an ordinary canonical ZIP positive.
+        variants = ("clean", "archive_comment", "member_comment", "member_extra")
+        for variant in variants:
+            with self.subTest(variant=variant):
+                with tempfile.TemporaryDirectory() as temporary:
+                    output_dir = Path(temporary)
+                    staging, contents = self._staged_release_fixture(output_dir)
+                    binary = io.BytesIO()
+                    with zipfile.ZipFile(binary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                        member = zipfile.ZipInfo("backend/artisan")
+                        member.compress_type = zipfile.ZIP_DEFLATED
+                        if variant == "member_comment":
+                            member.comment = b"undeclared release metadata"
+                        if variant == "member_extra":
+                            # One structurally valid vendor extension field.
+                            member.extra = b"\xfe\xca\x04\x00HIDE"
+                        archive.writestr(member, b"<?php // staged reviewed Laravel CLI")
+                        if variant == "archive_comment":
+                            archive.comment = b"undeclared release metadata"
+
+                    zipped = binary.getvalue()
+                    digest = hashlib.sha256(zipped).hexdigest()
+                    manifest = json.loads(contents["FOODEX-Update.json"])
+                    manifest["sha256"] = digest
+                    contents["FOODEX-Update.json"] = (
+                        json.dumps(manifest) + "\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.sha256.txt"] = (
+                        f"{digest}  FOODEX-Update.zip\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.zip"] = zipped
+                    for name, payload in contents.items():
+                        (staging / name).write_bytes(payload)
+
+                    if variant == "clean":
+                        builder.publish_release_bundle(staging, output_dir)
+                        for name, payload in contents.items():
+                            self.assertEqual((output_dir / name).read_bytes(), payload)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "Undeclared Update release ZIP"):
+                            builder.publish_release_bundle(staging, output_dir)
+                        for name, payload in contents.items():
+                            self.assertFalse(os.path.lexists(output_dir / name), name)
+                            self.assertEqual((staging / name).read_bytes(), payload)
+                    self.assertFalse(
+                        (output_dir / ".FOODEX-Update.publish.lock").exists()
+                    )
+
     def test_update_release_group_enforces_runtime_expansion_budgets_before_publish(self) -> None:
         # Real Laravel Verify Package defaults reject >50k ZIP entries, >256 MiB
         # per entry or >1 GiB cumulative expanded data. A coherent ZIP and

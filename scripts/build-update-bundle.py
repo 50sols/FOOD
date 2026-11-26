@@ -933,6 +933,11 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
             raise RuntimeError("Update release ZIP digest does not match manifest.")
         with zipfile.ZipFile(archive_path) as archive:
             members = archive.infolist()
+            # The canonical producer emits no ZIP-level comments. Coherent
+            # manifest/digest sidecars do not authorize opaque unlisted payload
+            # in the end-of-central-directory record.
+            if archive.comment:
+                raise RuntimeError("Undeclared Update release ZIP archive comment.")
             if [member.filename for member in members] != filenames:
                 raise RuntimeError("Update release file list does not match ZIP members.")
 
@@ -958,6 +963,13 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
             folded_names: set[str] = set()
             for member in members:
                 canonical = safe_path(member.filename)
+                # Canonical first-party ZIP members have no file comments or
+                # extra fields. Do not silently publish undeclared binary
+                # metadata that the manifest inventory cannot account for.
+                if member.comment or member.extra:
+                    raise RuntimeError(
+                        f"Undeclared Update release ZIP member metadata: {canonical}"
+                    )
                 folded = canonical.casefold()
                 if folded in folded_names:
                     raise RuntimeError(f"Ambiguous Update release ZIP member: {canonical}")
