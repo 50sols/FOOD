@@ -813,6 +813,18 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
         # when the original command-line arguments are parsed.
         if manifest.get("available") is not True or manifest.get("requires_full_redeploy") is not False:
             raise RuntimeError("Update release manifest is not publishable as a ZIP update.")
+        # Unsupported manifest schema, a redeploy reason on an installable
+        # ZIP, or missing release notes must never pass the final publisher
+        # boundary merely because the archive and digest are coherent.
+        if (
+            type(manifest.get("schema_version")) is not int
+            or manifest["schema_version"] != 1
+            or "reason" not in manifest
+            or manifest["reason"] is not None
+            or not isinstance(manifest.get("release_notes"), str)
+            or not manifest["release_notes"].strip()
+        ):
+            raise RuntimeError("Update release manifest schema or release notes are invalid.")
         target = manifest.get("target_version")
         minimum = manifest.get("minimum_current_version")
         if not isinstance(target, str) or not isinstance(minimum, str):

@@ -408,8 +408,11 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                 json.dumps({
                     "package": "FOODEX-Update.zip",
                     "sha256": digest,
+                    "schema_version": 1,
                     "available": True,
                     "requires_full_redeploy": False,
+                    "reason": None,
+                    "release_notes": "Canonical updater regression fixture",
                     "target_version": "1.0.127",
                     "minimum_current_version": "1.0.126",
                     "source_base": "0" * 40,
@@ -469,6 +472,16 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
         # The archive, file list, and ZIP digest remain valid; changing only
         # release provenance, range or claimed file counts must block publish.
         attacks = {
+            "missing_schema": lambda m: m.pop("schema_version"),
+            "future_schema": lambda m: m.__setitem__("schema_version", 2),
+            "string_schema": lambda m: m.__setitem__("schema_version", "1"),
+            "boolean_schema": lambda m: m.__setitem__("schema_version", True),
+            "missing_reason": lambda m: m.pop("reason"),
+            "nonempty_reason": lambda m: m.__setitem__("reason", "Manual redeploy required"),
+            "missing_notes": lambda m: m.pop("release_notes"),
+            "empty_notes": lambda m: m.__setitem__("release_notes", ""),
+            "blank_notes": lambda m: m.__setitem__("release_notes", " \\t "),
+            "nonstring_notes": lambda m: m.__setitem__("release_notes", ["not plain text"]),
             "not_available": lambda m: m.__setitem__("available", False),
             "requires_redeploy": lambda m: m.__setitem__("requires_full_redeploy", True),
             "missing_target": lambda m: m.pop("target_version"),
