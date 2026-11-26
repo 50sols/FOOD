@@ -204,7 +204,12 @@ class B2bPriceResolver
 
         if (! $isPlatformCustomer) {
             $requireCurrentAccount();
-            $requireCurrentTier();
+            // A missing (or already revoked) tier price remains the legacy
+            // no-price/409 path; only previously selected private prices need
+            // late-revocation verification.
+            if ($resolved !== []) {
+                $requireCurrentTier();
+            }
 
             return $baseResolved + $resolved;
         }
@@ -218,7 +223,9 @@ class B2bPriceResolver
 
         $fallback = $this->platformFallbackMany($missing);
         $requireCurrentAccount();
-        $requireCurrentTier();
+        if ($resolved !== []) {
+            $requireCurrentTier();
+        }
 
         return $baseResolved + $resolved + $fallback;
     }
