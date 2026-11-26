@@ -787,6 +787,16 @@ def sha256_pinned_release_member(
         raise RuntimeError(f"Unable to hash pinned Update release member: {path}") from exc
 
 
+def _reject_duplicate_manifest_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Reject ambiguous JSON objects at every nesting level before publication."""
+    unique: dict[str, object] = {}
+    for key, value in pairs:
+        if key in unique:
+            raise RuntimeError("Duplicate key in Update release manifest JSON.")
+        unique[key] = value
+    return unique
+
+
 def assert_staged_release_consistency(staging_dir: Path) -> str:
     """Refuse mismatched manifest, file list, checksum and actual ZIP bytes.
 
@@ -799,7 +809,9 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
     digest_path = staging_dir / "FOODEX-Update.sha256.txt"
     archive_path = staging_dir / "FOODEX-Update.zip"
     try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = json.loads(
+            manifest_path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_manifest_keys
+        )
         if not isinstance(manifest, dict) or not isinstance(manifest.get("delta"), dict):
             raise RuntimeError("Invalid Update release manifest.")
         expected_hash = manifest.get("sha256")

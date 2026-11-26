@@ -434,6 +434,36 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
             (staging / name).write_bytes(data)
         return staging, contents
 
+    def test_update_release_group_rejects_duplicate_manifest_json_keys(self) -> None:
+        # SHA-consistent artifacts must not depend on last-key-wins JSON
+        # parsing, including nested metadata used for update planning.
+        cases = (
+            (
+                "top_level_version",
+                b'"target_version": "1.0.127"',
+                b'"target_version": "9.9.9", "target_version": "1.0.127"',
+            ),
+            (
+                "nested_file_count",
+                b'"file_count": 1',
+                b'"file_count": 999, "file_count": 1',
+            ),
+        )
+        for attack, original_key, duplicate_keys in cases:
+            with self.subTest(attack=attack):
+                with tempfile.TemporaryDirectory() as directory:
+                    output_dir = Path(directory)
+                    staged, original = self._staged_release_fixture(output_dir)
+                    original_manifest = original["FOODEX-Update.json"]
+                    self.assertIn(original_key, original_manifest)
+                    altered_manifest = original_manifest.replace(original_key, duplicate_keys, 1)
+                    (staged / "FOODEX-Update.json").write_bytes(altered_manifest)
+                    with self.assertRaisesRegex(RuntimeError, "Duplicate key"):
+                        builder.publish_release_bundle(staged, output_dir)
+                    for name in original:
+                        self.assertFalse(os.path.lexists(output_dir / name), name)
+                    self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
+
     def test_update_release_group_refuses_cross_artifact_drift_before_publish(self) -> None:
         alterations = {
             "manifest_hash": lambda p: p.__setitem__(
