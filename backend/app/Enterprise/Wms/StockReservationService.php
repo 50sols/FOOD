@@ -15,6 +15,7 @@ final class StockReservationService
     public function __construct(
         private readonly WarehouseScope $warehouseScope,
         private readonly AuditLogger $audit,
+        private readonly UnknownInventoryOwnerProjection $ownerProjection,
     ) {}
 
     public function ensureReservation(
@@ -26,6 +27,7 @@ final class StockReservationService
         int $referenceId,
         string $reason = 'Enterprise WMS stock reservation',
     ): float {
+        $this->assertPersistedActorIdentity($actor);
         $warehouse = $this->warehouseScope->assertWarehouse($actor, $warehouseId, 'inventory.manage');
         $targetQuantity = $this->normalizeQuantity($quantity);
         $referenceType = $this->normalizeReferenceType($referenceType);
@@ -98,6 +100,13 @@ final class StockReservationService
                 'reserved_quantity' => $nextReserved,
             ])->save();
 
+            // One conditional INSERT/UPDATE verifies the prior UNKNOWN owner
+            // quantity/reservations and writes the new owner position. If it
+            // affects no row, the entire enclosing canonical reservation
+            // transaction rolls back BEFORE the movement/event is inserted.
+            // This avoids two new SELECTs in the 18-query WMS hot path.
+            $this->ownerProjection->afterReservationMutation($inventory, $onHand, $reserved);
+
             DB::table('stock_movements')->insert([
                 'inventory_id' => $inventory->getKey(),
                 'store_id' => $storeId,
@@ -154,6 +163,7 @@ final class StockReservationService
         string $referenceType,
         int $referenceId,
     ): float {
+        $this->assertPersistedActorIdentity($actor);
         $warehouse = $this->warehouseScope->assertWarehouse($actor, $warehouseId, 'inventory.view');
         $referenceType = $this->normalizeReferenceType($referenceType);
 
@@ -174,11 +184,50 @@ final class StockReservationService
             ]);
         }
 
-        return $this->activeQuantityForReference(
+        $quantity = $this->activeQuantityForReference(
             (int) $inventoryId,
             (int) $warehouse->store_id,
             $referenceType,
             $referenceId,
+        );
+
+        // A persisted permission DENY or offboarding can arrive while the
+        // final stock_movements aggregate SELECT is running. Rehydrate the
+        // original identity and fail closed before disclosing its quantity.
+        // This guards the read path only, not the bounded write hot path.
+        $this->assertPersistedActorIdentity($actor);
+        $originalId = $actor->getRawOriginal($actor->getKeyName());
+        $currentActor = User::query()->whereKey($originalId)
+            ->where('is_active', true)->first();
+        abort_unless($currentActor instanceof User, 403);
+
+        $currentWarehouse = $this->warehouseScope->assertWarehouse(
+            $currentActor, $warehouseId, 'inventory.view',
+        );
+        abort_unless((int) $currentWarehouse->store_id === (int) $warehouse->store_id, 404);
+
+        // A mid-read inventory reassignment must not be attributed to the
+        // former warehouse's reservation context.
+        abort_unless(Inventory::query()->whereKey($inventoryId)
+            ->where('warehouse_id', $warehouseId)
+            ->where('product_id', $productId)->exists(), 404);
+
+        return $quantity;
+    }
+
+    /**
+     * Reject a caller-owned Eloquent actor whose primary key was changed in
+     * memory: WMS movement attribution and reads must use its persisted key.
+     * No additional SQL on the 18-query reservation hot path.
+     */
+    private function assertPersistedActorIdentity(User $actor): void
+    {
+        $originalId = $actor->getRawOriginal($actor->getKeyName());
+        abort_unless(
+            $actor->exists
+                && $originalId !== null
+                && (string) $actor->getKey() === (string) $originalId,
+            403,
         );
     }
 
@@ -204,6 +253,14 @@ final class StockReservationService
 
     private function normalizeQuantity(float $quantity): float
     {
+        // NaN and +/-Infinity compare false against ordinary numeric bounds.
+        // Reject them before rounding so no invalid reservation reaches SQL.
+        if (! is_finite($quantity)) {
+            throw ValidationException::withMessages([
+                'quantity' => ['Reservation quantity must be a finite number.'],
+            ]);
+        }
+
         $quantity = round($quantity, 3);
 
         if ($quantity < 0 || $quantity > 99999999999.999) {

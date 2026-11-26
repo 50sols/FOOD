@@ -1,0 +1,277 @@
+<?php
+
+namespace App\Enterprise\Wms;
+
+use App\Models\Inventory;
+use Illuminate\Support\Facades\DB;
+use LogicException;
+use Symfony\Component\HttpKernel\Exception\HttpException;
+
+/**
+ * Reconcile legally UNATTRIBUTED stock with the canonical inventory row. This is not a legal-title attribution, valuation source, or second ledger.
+ *
+ * Called only while the canonical inventory is locked by the surrounding
+ * procurement or WMS stock-posting transaction. Known-owner positions are
+ * deliberately left stale: a transfer/receipt/return cannot infer legal title.
+ */
+final class UnknownInventoryOwnerProjection
+{
+    /**
+     * Keep reservation hot paths within their SQL query budget while preserving
+     * the legal-title fail-closed boundary. The caller holds the canonical
+     * inventory row lock; the single conditional upsert touches only UNKNOWN
+     * title when it is the sole position (or there are no positions yet).
+     * Known/mixed owner positions remain deliberately stale.
+     */
+    /**
+     * Atomic receipt/order stock mutations may update only an honest UNKNOWN
+     * partition. A known/mixed legal title needs its own authorized owner-
+     * attributed movement and checker contract, not a best-effort aggregate
+     * mutation that makes the owner ledger stale.
+     *
+     * The caller MUST already lock canonical inventories.id FOR UPDATE and
+     * enter a DB transaction; this method then locks the owner rows in the
+     * same lock order. Failures leave ALL canonical and title balances intact.
+     */
+    public function assertUnattributedBeforeMutation(int $inventoryId): void
+    {
+        if ($inventoryId < 1 || DB::transactionLevel() < 1) {
+            throw new LogicException('Atomic owner stock mutation requires a canonical inventory transaction.');
+        }
+
+        $canonical = DB::table('inventories')
+            ->where('id', $inventoryId)
+            ->first(['quantity', 'reserved_quantity']);
+        if ($canonical === null) {
+            throw new LogicException('Canonical inventory is missing from the owner stock transaction.');
+        }
+
+        self::assertCanonicalBalance($canonical->quantity, $canonical->reserved_quantity);
+
+        $positions = DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventoryId)
+            ->lockForUpdate()
+            ->get(['id', 'owner_key', 'owner_kind', 'supplier_id', 'quantity', 'reserved_quantity']);
+
+        if ($positions->isEmpty()) {
+            // No claimed owner: the following canonical mutation may create
+            // ONE UNKNOWN row, but never claim supplier or FOODEX legal title.
+            return;
+        }
+
+        if ($positions->count() !== 1) {
+            throw new HttpException(409, 'Mixed owner stock requires approved per-owner movement allocation.');
+        }
+
+        $owner = $positions->first();
+        if ($owner->owner_key !== 'UNKNOWN' || $owner->owner_kind !== 'UNKNOWN'
+            || $owner->supplier_id !== null
+            || DB::table('enterprise_inventory_title_attestations')
+                ->where('owner_position_id', (int) $owner->id)->exists()) {
+            throw new HttpException(409, 'Claimed legal stock title requires verified per-owner movement allocation.');
+        }
+
+        if (self::milliUnits($owner->quantity) !== self::milliUnits($canonical->quantity)
+            || self::milliUnits($owner->reserved_quantity) !== self::milliUnits($canonical->reserved_quantity)) {
+            throw new HttpException(409, 'UNKNOWN owner stock balance must be reconciled before the next mutation.');
+        }
+    }
+
+    public function afterReservationMutation(
+        Inventory $lockedInventory,
+        float $previousQuantity,
+        float $previousReserved,
+    ): void {
+        $inventoryId = (int) $lockedInventory->getKey();
+        if ($inventoryId < 1 || ! $lockedInventory->exists || DB::transactionLevel() < 1) {
+            throw new LogicException('Reservation owner projection requires the locked canonical stock transaction.');
+        }
+
+        self::assertCanonicalBalance($previousQuantity, $previousReserved);
+        self::assertCanonicalBalance($lockedInventory->quantity, $lockedInventory->reserved_quantity);
+
+        // A single statement is essential: the existing WMS reservation
+        // performance contract allows no extra SELECT+INSERT/UPDATE sequence.
+        // Use the already-locked canonical snapshot, never user-supplied stock.
+        $sql = <<<'SQL'
+INSERT INTO enterprise_inventory_owner_positions (
+    inventory_id, owner_key, owner_kind, supplier_id, quantity, reserved_quantity,
+    source_inventory_updated_at, created_at, updated_at
+)
+SELECT ?, 'UNKNOWN', 'UNKNOWN', NULL, ?, ?, ?, ?, ?
+FROM (SELECT 1 AS seed) AS projection_seed
+LEFT JOIN enterprise_inventory_owner_positions AS existing
+    ON existing.inventory_id = ?
+LEFT JOIN enterprise_inventory_title_attestations AS title_attestation
+    ON title_attestation.owner_position_id = existing.id
+GROUP BY projection_seed.seed
+HAVING COUNT(existing.id) = 0
+    OR (
+        COUNT(existing.id) = 1
+        AND MIN(existing.owner_key) = 'UNKNOWN'
+        AND MIN(existing.owner_kind) = 'UNKNOWN'
+        AND COUNT(existing.supplier_id) = 0
+        AND COUNT(title_attestation.id) = 0
+        AND MIN(existing.quantity) = CAST(? AS DECIMAL(14,3))
+        AND MIN(existing.reserved_quantity) = CAST(? AS DECIMAL(14,3))
+    )
+SQL;
+
+        $driver = DB::connection()->getDriverName();
+        if (in_array($driver, ['mysql', 'mariadb'], true)) {
+            $sql .= <<<'SQL'
+
+ON DUPLICATE KEY UPDATE
+    quantity = VALUES(quantity),
+    reserved_quantity = VALUES(reserved_quantity),
+    source_inventory_updated_at = VALUES(source_inventory_updated_at),
+    updated_at = VALUES(updated_at)
+SQL;
+        } elseif (in_array($driver, ['sqlite', 'pgsql'], true)) {
+            $sql .= <<<'SQL'
+
+ON CONFLICT (inventory_id, owner_key) DO UPDATE SET
+    quantity = excluded.quantity,
+    reserved_quantity = excluded.reserved_quantity,
+    source_inventory_updated_at = excluded.source_inventory_updated_at,
+    updated_at = excluded.updated_at
+SQL;
+        } else {
+            throw new LogicException('Unsupported inventory owner projection database driver.');
+        }
+
+        $now = now();
+        // For a changed reservation, a valid INSERT/UPDATE must affect at
+        // least one row. Zero means known/mixed title, a stale UNKNOWN
+        // allocation, or an independently attested row. Throwing now rolls
+        // back the canonical inventory UPDATE in the same transaction and
+        // prevents both the stock movement and owner event from posting.
+        // This single SQL statement retains the indexed WMS query budget:
+        // no preflight SELECT round trips on the reservation hot path.
+        $affected = DB::affectingStatement($sql, [
+            $inventoryId,
+            $lockedInventory->quantity,
+            $lockedInventory->reserved_quantity,
+            $lockedInventory->updated_at,
+            $now,
+            $now,
+            $inventoryId,
+            $previousQuantity,
+            $previousReserved,
+        ]);
+
+        if ($affected < 1) {
+            throw new HttpException(409, 'Reservation owner allocation is not reconciled or independently authorized.');
+        }
+    }
+
+    public function afterProcurementMutation(Inventory $inventory): void
+    {
+        $this->afterUnattributedInventoryMutation((int) $inventory->getKey());
+    }
+
+    /**
+     * Refresh ONLY a wholly UNKNOWN stock position from already-posted canonical
+     * inventory. The caller must hold the inventory row lock in this transaction.
+     * This is a read-model projection, never a second stock posting or title grant.
+     */
+    public function afterUnattributedInventoryMutation(int $inventoryId): void
+    {
+        if ($inventoryId < 1 || DB::transactionLevel() < 1) {
+            throw new LogicException('Inventory owner projection requires the canonical stock transaction.');
+        }
+
+        // Read the already locked canonical row, not client-supplied quantity.
+        $canonical = DB::table('inventories')
+            ->where('id', $inventoryId)
+            ->first(['quantity', 'reserved_quantity', 'updated_at']);
+
+        if ($canonical === null) {
+            throw new LogicException('Canonical inventory disappeared before owner projection.');
+        }
+
+        self::assertCanonicalBalance($canonical->quantity, $canonical->reserved_quantity);
+
+        $rows = DB::table('enterprise_inventory_owner_positions')
+            ->where('inventory_id', $inventoryId)
+            ->lockForUpdate()
+            ->get(['id', 'owner_key', 'owner_kind', 'supplier_id']);
+
+        // Never rewrite, redistribute, or implicitly refresh a legal-owner
+        // assertion. Without authenticated title evidence the entire set must
+        // remain fail-closed/stale after the aggregate inventory mutation.
+        if ($rows->count() > 1) {
+            return;
+        }
+
+        if ($rows->count() === 1) {
+            $row = $rows->first();
+            if ($row->owner_key !== 'UNKNOWN'
+                || $row->owner_kind !== 'UNKNOWN'
+                || $row->supplier_id !== null) {
+                return;
+            }
+
+            // Even UNKNOWN positions can carry immutable title evidence.
+            // A caller that skipped the preflight must not silently rewrite
+            // an attested stock revision after changing canonical inventory.
+            if (DB::table('enterprise_inventory_title_attestations')
+                ->where('owner_position_id', (int) $row->id)
+                ->exists()) {
+                throw new HttpException(409, 'Attested inventory title requires an approved per-owner movement.');
+            }
+        }
+
+        $data = [
+            'quantity' => $canonical->quantity,
+            'reserved_quantity' => $canonical->reserved_quantity,
+            'source_inventory_updated_at' => $canonical->updated_at,
+            'updated_at' => now(),
+        ];
+
+        if ($rows->isNotEmpty()) {
+            DB::table('enterprise_inventory_owner_positions')
+                ->where('id', $rows->first()->id)
+                ->update($data);
+
+            return;
+        }
+
+        DB::table('enterprise_inventory_owner_positions')->insert([
+            'inventory_id' => $inventoryId,
+            'owner_key' => 'UNKNOWN',
+            'owner_kind' => 'UNKNOWN',
+            'supplier_id' => null,
+            ...$data,
+            'created_at' => now(),
+        ]);
+    }
+
+    /**
+     * Every projection is a transactional integrity boundary on canonical
+     * stock. Never write a valid-looking UNKNOWN/known owner report while
+     * reserved units exceed physical on-hand or either balance is negative.
+     * Work in exact DECIMAL(14,3) milli-units; an exception rolls back the
+     * surrounding canonical stock mutation and its movement.
+     */
+    private static function assertCanonicalBalance(mixed $quantity, mixed $reserved): void
+    {
+        $onHand = self::milliUnits($quantity);
+        $onReserve = self::milliUnits($reserved);
+
+        if ($onHand < 0 || $onReserve < 0 || $onReserve > $onHand) {
+            throw new LogicException('Canonical stock balance violates inventory reservation invariants.');
+        }
+    }
+
+    private static function milliUnits(mixed $value): int
+    {
+        if (preg_match('/\A(-?)([0-9]{1,11})(?:\.([0-9]{1,3}))?\z/D', trim((string) $value), $parts) !== 1) {
+            throw new LogicException('Canonical stock quantity is not valid DECIMAL(14,3).');
+        }
+
+        $millis = ((int) $parts[2]) * 1000 + (int) str_pad($parts[3] ?? '', 3, '0');
+
+        return $parts[1] === '-' ? -$millis : $millis;
+    }
+}

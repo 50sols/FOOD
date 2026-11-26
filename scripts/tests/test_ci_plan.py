@@ -329,6 +329,16 @@ class CiPlanTest(unittest.TestCase):
         self.assertFalse(workflow_plan["areas"]["c13_integrated_e2e"])
         self.assertFalse(workflow_plan["areas"]["operational_completion_e2e"])
         self.assertFalse(workflow_plan["backend_dashboard_only"])
+    def test_vendor_ownership_qa_note_routes_to_backend_without_integrated_e2e(self):
+        path="docs/v2/qa/2844-vendor-stock-ownership-isolation.md"
+        plan=module.resolve(self.config,[path],"test/2844-v2-vendor-ledger-ownership-isolation")
+        actual={area for area,enabled in plan["areas"].items() if enabled}
+        self.assertEqual([],plan["unclassified_paths"])
+        self.assertEqual({"backend"},actual)
+        self.assertTrue(plan["backend_dashboard_only"])
+        self.assertFalse(plan["areas"]["c13_integrated_e2e"])
+        self.assertFalse(plan["areas"]["operational_completion_e2e"])
+
     def test_reviewed_2846_organization_qa_keeps_laravel_checks_and_unknown_fail_closed(self):
         """#4040: classify only source-reviewed #2846 org setup QA, never bypass E2E."""
         paths = [

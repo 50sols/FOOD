@@ -16,6 +16,7 @@ final class InventoryCountService
     public function __construct(
         private readonly WarehouseScope $warehouseScope,
         private readonly AuditLogger $audit,
+        private readonly UnknownInventoryOwnerProjection $ownerProjection,
     ) {}
 
     /** @param list<int> $inventoryIds */
@@ -203,12 +204,21 @@ final class InventoryCountService
                 $variance = round($counted - $current, 3);
 
                 if (! $this->sameQuantity($variance, 0.0)) {
+                    // Under the existing locked count transaction, reject
+                    // claimed/mixed or already-stale legal stock title before
+                    // writing any physical variance or counted line.
+                    $this->ownerProjection->assertUnattributedBeforeMutation($inventoryId);
+
                     DB::table('inventories')
                         ->where('id', $inventoryId)
                         ->update([
                             'quantity' => $counted,
                             'updated_at' => $now,
                         ]);
+
+                    // Reconcile only a wholly UNKNOWN legal-title position,
+                    // never reclassify vendor stock after an inventory count.
+                    $this->ownerProjection->afterUnattributedInventoryMutation($inventoryId);
 
                     $movements[] = [
                         'inventory_id' => $inventoryId,

@@ -2,18 +2,55 @@
 
 namespace App\Services;
 
+use App\Enterprise\Wms\UnknownInventoryOwnerProjection;
 use App\Models\Order;
 use App\Models\StockMovement;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpKernel\Exception\HttpException;
 
 final class OrderInventoryReservationService
 {
+    public function __construct(
+        private readonly UnknownInventoryOwnerProjection $ownerProjection,
+    ) {}
+
     /**
      * @param  list<array{product_id: int, quantity: float}>  $items
      */
     public function reserve(Order $order, User $user, array $items, string $reason = 'dashboard_order'): void
+    {
+        // This service can also be called directly by internal order workflows,
+        // bypassing HTTP request rules. Never treat NaN, infinity, zero, a
+        // negative or sub-milli-unit value as a successfully reserved order.
+        // Validate the WHOLE batch before any canonical/owner stock mutation.
+        foreach ($items as $item) {
+            $validProduct = filter_var(
+                $item['product_id'], FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]],
+            ) !== false;
+            $quantity = (float) $item['quantity'];
+
+            if (! $validProduct
+                || ! is_finite($quantity)
+                || $quantity <= 0
+                || $quantity > 99999999999.999
+                || round($quantity, 3) <= 0
+                || abs($quantity - round($quantity, 3)) > 0.000000001) {
+                throw ValidationException::withMessages([
+                    'items' => ['Order inventory requires a positive product ID and a finite positive quantity with at most three decimal places.'],
+                ]);
+            }
+        }
+
+        DB::transaction(function () use ($order, $user, $items, $reason): void {
+            $this->lockOrderForInventoryLifecycle($order);
+            $this->reserveWithinTransaction($order, $user, $items, $reason);
+        }, attempts: 3);
+    }
+
+    /** @param list<array{product_id: int, quantity: float}> $items */
+    private function reserveWithinTransaction(Order $order, User $user, array $items, string $reason): void
     {
         foreach ($items as $item) {
             $inventoryQuery = DB::table('inventories')
@@ -44,6 +81,18 @@ final class OrderInventoryReservationService
                 continue;
             }
 
+            // A corrupt stock row must not be silently discarded by max(0).
+            // It may represent missing legal stock or an overdrawn canonical
+            // reservation, even when another warehouse can satisfy the cart.
+            foreach ($inventoryRows as $inventoryRow) {
+                $onHand = (float) $inventoryRow->quantity;
+                $reserved = (float) $inventoryRow->reserved_quantity;
+                if (! is_finite($onHand) || ! is_finite($reserved)
+                    || $onHand < 0 || $reserved < 0 || $reserved > $onHand) {
+                    throw new HttpException(409, 'Canonical inventory quantities are inconsistent.');
+                }
+            }
+
             $available = (float) $inventoryRows->sum(
                 static fn (object $row): float => max(
                     0.0,
@@ -64,9 +113,15 @@ final class OrderInventoryReservationService
                 $reserve = min($remaining, $rowAvailable);
 
                 if ($reserve > 0) {
+                    $this->ownerProjection->assertUnattributedBeforeMutation((int) $inventoryRow->id);
+
                     DB::table('inventories')
                         ->where('id', $inventoryRow->id)
                         ->increment('reserved_quantity', $reserve);
+
+                    // Same SQL transaction as the canonical reservation and
+                    // immutable stock-movement event trigger.
+                    $this->ownerProjection->afterUnattributedInventoryMutation((int) $inventoryRow->id);
 
                     StockMovement::query()->create([
                         'inventory_id' => (int) $inventoryRow->id,
@@ -91,6 +146,14 @@ final class OrderInventoryReservationService
 
     public function release(Order $order, User $user, string $reason = 'order_cancelled'): void
     {
+        DB::transaction(function () use ($order, $user, $reason): void {
+            $this->lockOrderForInventoryLifecycle($order);
+            $this->releaseWithinTransaction($order, $user, $reason);
+        }, attempts: 3);
+    }
+
+    private function releaseWithinTransaction(Order $order, User $user, string $reason): void
+    {
         foreach ($this->activeReservations($order) as $inventoryId => $quantity) {
             $inventory = DB::table('inventories')
                 ->join('warehouses', 'warehouses.id', '=', 'inventories.warehouse_id')
@@ -100,15 +163,25 @@ final class OrderInventoryReservationService
                 ->first(['inventories.*']);
 
             if ($inventory === null) {
-                continue;
+                // Never report a successful cancellation while an order's
+                // reserved inventory has disappeared or crossed store scope.
+                // The immutable reservation ledger must be reconciled first.
+                throw new HttpException(409, 'Reserved inventory is missing from the order store.');
             }
+
+            if ($quantity > (float) $inventory->reserved_quantity) {
+                throw new HttpException(409, 'Order release exceeds canonical inventory reservations.');
+            }
+            $this->ownerProjection->assertUnattributedBeforeMutation((int) $inventoryId);
 
             DB::table('inventories')
                 ->where('id', $inventoryId)
                 ->update([
-                    'reserved_quantity' => max(0.0, (float) $inventory->reserved_quantity - $quantity),
+                    'reserved_quantity' => (float) $inventory->reserved_quantity - $quantity,
                     'updated_at' => now(),
                 ]);
+
+            $this->ownerProjection->afterUnattributedInventoryMutation((int) $inventoryId);
 
             StockMovement::query()->create([
                 'inventory_id' => $inventoryId,
@@ -124,6 +197,14 @@ final class OrderInventoryReservationService
     }
 
     public function consume(Order $order, User $user): void
+    {
+        DB::transaction(function () use ($order, $user): void {
+            $this->lockOrderForInventoryLifecycle($order);
+            $this->consumeWithinTransaction($order, $user);
+        }, attempts: 3);
+    }
+
+    private function consumeWithinTransaction(Order $order, User $user): void
     {
         foreach ($this->activeReservations($order) as $inventoryId => $quantity) {
             $inventory = DB::table('inventories')
@@ -144,6 +225,8 @@ final class OrderInventoryReservationService
                 throw new HttpException(409, 'Reserved inventory is inconsistent with the order.');
             }
 
+            $this->ownerProjection->assertUnattributedBeforeMutation((int) $inventoryId);
+
             DB::table('inventories')
                 ->where('id', $inventoryId)
                 ->update([
@@ -151,6 +234,8 @@ final class OrderInventoryReservationService
                     'reserved_quantity' => $reserved - $quantity,
                     'updated_at' => now(),
                 ]);
+
+            $this->ownerProjection->afterUnattributedInventoryMutation((int) $inventoryId);
 
             StockMovement::query()->create([
                 'inventory_id' => $inventoryId,
@@ -162,6 +247,25 @@ final class OrderInventoryReservationService
                 'reference_id' => $order->getKey(),
                 'reason' => 'order_delivered',
             ]);
+        }
+    }
+
+    /**
+     * Release and consume must serialize on the actual order row before
+     * reading reference-scoped stock movement balances. A second concurrent
+     * delivery/cancellation cannot consume the same reservation twice.
+     */
+    private function lockOrderForInventoryLifecycle(Order $order): void
+    {
+        if ($order->getKey() === null) {
+            throw new \LogicException('Order inventory lifecycle requires a persisted order key.');
+        }
+
+        $exists = DB::table('orders')->where('id', (int) $order->getKey())
+            ->where('store_id', (int) $order->store_id)
+            ->lockForUpdate()->first(['id']);
+        if ($exists === null) {
+            throw new HttpException(409, 'Order is not persisted in the requested store.');
         }
     }
 
@@ -187,6 +291,12 @@ final class OrderInventoryReservationService
                 $balances[$inventoryId] += $quantity;
             } else {
                 $balances[$inventoryId] -= $quantity;
+                // A release or sale with no matching reserved units is a
+                // corrupted ledger, not a zero reservation. Do not conceal
+                // it by clamping negative balances to zero.
+                if ($balances[$inventoryId] < -0.0005) {
+                    throw new HttpException(409, 'Order inventory movements exceed the original reservation.');
+                }
             }
         }
 
