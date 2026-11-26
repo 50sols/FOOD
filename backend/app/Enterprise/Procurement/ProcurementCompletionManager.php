@@ -122,22 +122,16 @@ final class ProcurementCompletionManager
                 ->sum('total_amount')
             : null;
         $activeContracts = $canOrders
-            ? DB::table('enterprise_procurement_contracts')
-                ->where('organization_id', $scope->organizationId)
-                ->where('company_id', $scope->companyId)
-                ->where('store_id', $storeId)
-                ->where('status', 'active')
-                ->whereDate('starts_on', '<=', now()->toDateString())
-                ->whereDate('ends_on', '>=', now()->toDateString())
+            ? $this->scopedContractDashboardQuery($storeId, $scope->organizationId, $scope->companyId)
+                ->where('contracts.status', 'active')
+                ->whereDate('contracts.starts_on', '<=', now()->toDateString())
+                ->whereDate('contracts.ends_on', '>=', now()->toDateString())
                 ->count()
             : null;
         $expiringContracts = $canOrders
-            ? DB::table('enterprise_procurement_contracts')
-                ->where('organization_id', $scope->organizationId)
-                ->where('company_id', $scope->companyId)
-                ->where('store_id', $storeId)
-                ->where('status', 'active')
-                ->whereBetween('ends_on', [now()->toDateString(), now()->addDays($contractWarningDays)->toDateString()])
+            ? $this->scopedContractDashboardQuery($storeId, $scope->organizationId, $scope->companyId)
+                ->where('contracts.status', 'active')
+                ->whereBetween('contracts.ends_on', [now()->toDateString(), now()->addDays($contractWarningDays)->toDateString()])
                 ->count()
             : null;
         $activeRfqs = $canRequests
@@ -3099,25 +3093,39 @@ final class ProcurementCompletionManager
             ['label' => '0-30', 'value' => $this->contractCountBetween($storeId, $today, $today->addDays(30), $organizationId, $companyId)],
             ['label' => '31-60', 'value' => $this->contractCountBetween($storeId, $today->addDays(31), $today->addDays(60), $organizationId, $companyId)],
             ['label' => '61-90', 'value' => $this->contractCountBetween($storeId, $today->addDays(61), $today->addDays(90), $organizationId, $companyId)],
-            ['label' => '90+', 'value' => DB::table('enterprise_procurement_contracts')
-                ->where('organization_id', $organizationId)
-                ->where('company_id', $companyId)
-                ->where('store_id', $storeId)
-                ->where('status', 'active')
-                ->whereDate('ends_on', '>', $today->addDays(90)->toDateString())
+            ['label' => '90+', 'value' => $this->scopedContractDashboardQuery($storeId, $organizationId, $companyId)
+                ->where('contracts.status', 'active')
+                ->whereDate('contracts.ends_on', '>', $today->addDays(90)->toDateString())
                 ->count()],
         ];
     }
 
     private function contractCountBetween(int $storeId, CarbonImmutable $from, CarbonImmutable $to, int $organizationId, int $companyId): int
     {
-        return DB::table('enterprise_procurement_contracts')
-            ->where('organization_id', $organizationId)
-            ->where('company_id', $companyId)
-            ->where('store_id', $storeId)
-            ->where('status', 'active')
-            ->whereBetween('ends_on', [$from->toDateString(), $to->toDateString()])
+        return $this->scopedContractDashboardQuery($storeId, $organizationId, $companyId)
+            ->where('contracts.status', 'active')
+            ->whereBetween('contracts.ends_on', [$from->toDateString(), $to->toDateString()])
             ->count();
+    }
+
+    private function scopedContractDashboardQuery(int $storeId, int $organizationId, int $companyId): QueryBuilder
+    {
+        // Aggregate the same live supplier entitlement as the contract detail
+        // and report. A moved supplier must not reveal former-store money.
+        return DB::table('enterprise_procurement_contracts as contracts')
+            ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
+            ->where('contracts.organization_id', $organizationId)
+            ->where('contracts.company_id', $companyId)
+            ->where('contracts.store_id', $storeId)
+            ->where('suppliers.organization_id', $organizationId)
+            ->where('suppliers.company_id', $companyId)
+            ->where(function (QueryBuilder $query) use ($storeId): void {
+                $query->where('suppliers.scope_type', 'company')
+                    ->orWhere(function (QueryBuilder $store) use ($storeId): void {
+                        $store->where('suppliers.scope_type', 'store')
+                            ->where('suppliers.store_id', $storeId);
+                    });
+            });
     }
 
     /** @return array{columns:list<string>,rows:list<array<string,mixed>>} */
