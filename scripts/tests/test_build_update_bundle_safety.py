@@ -509,6 +509,62 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                         (output_dir / ".FOODEX-Update.publish.lock").exists()
                     )
 
+    def test_update_release_group_requires_byte_identical_public_mirrors(self) -> None:
+        # A substituted ZIP can carry matching sidecars and a valid SHA-256,
+        # yet omit the canonical Laravel asset or alter the root alias.
+        variants = (
+            ("missing_alias", (("backend/public/assets/admin/status.css", b"safe-css"),), False),
+            ("missing_source", (("assets/admin/status.css", b"root-only-css"),), False),
+            ("different_content", (
+                ("backend/public/assets/admin/status.css", b"safe-css"),
+                ("assets/admin/status.css", b"evil-css"),
+            ), False),
+            ("same_size_different_content", (
+                ("backend/public/assets/admin/status.css", b"safe-css"),
+                ("assets/admin/status.css", b"evil-css"),
+            ), False),
+            ("matching_pair", (
+                ("backend/public/assets/admin/status.css", b"safe-css"),
+                ("assets/admin/status.css", b"safe-css"),
+            ), True),
+        )
+        for attack, assets, valid in variants:
+            with self.subTest(attack=attack):
+                with tempfile.TemporaryDirectory() as directory:
+                    output_dir = Path(directory)
+                    staging, contents = self._staged_release_fixture(output_dir)
+                    binary = io.BytesIO()
+                    with zipfile.ZipFile(binary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                        archive.writestr("backend/artisan", b"reviewed-cli")
+                        for name, payload in assets:
+                            archive.writestr(name, payload)
+                    zipped = binary.getvalue()
+                    digest = hashlib.sha256(zipped).hexdigest()
+                    manifest = json.loads(contents["FOODEX-Update.json"])
+                    manifest["sha256"] = digest
+                    contents["FOODEX-Update.json"] = (json.dumps(manifest) + "\n").encode("utf-8")
+                    contents["FOODEX-Update.files.txt"] = (
+                        "backend/artisan\n" + "".join(name + "\n" for name, _ in assets)
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.sha256.txt"] = (
+                        f"{digest}  FOODEX-Update.zip\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.zip"] = zipped
+                    for name, body in contents.items():
+                        (staging / name).write_bytes(body)
+
+                    if valid:
+                        builder.publish_release_bundle(staging, output_dir)
+                        for name, body in contents.items():
+                            self.assertEqual((output_dir / name).read_bytes(), body)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "public mirror"):
+                            builder.publish_release_bundle(staging, output_dir)
+                        for name, body in contents.items():
+                            self.assertFalse(os.path.lexists(output_dir / name), name)
+                            self.assertEqual((staging / name).read_bytes(), body)
+                    self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
+
     def test_complete_update_release_publishes_zip_last_under_exclusive_lock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output_dir = Path(directory)

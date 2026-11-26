@@ -841,6 +841,35 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
                     or (member.flag_bits & 1)
                 ):
                     raise RuntimeError(f"Unsafe Update release ZIP member type: {canonical}")
+
+            # Shared-host root assets MUST be exact mirrors of their canonical
+            # backend/public files. Coherently substituted ZIP+sidecars may
+            # otherwise publish independent root-only content, even with a
+            # valid SHA-256 and syntactically safe member names.
+            by_name = {member.filename: member for member in members}
+            for name, member in by_name.items():
+                if name.startswith("backend/public/"):
+                    alias = name[len("backend/public/"):]
+                    if alias.startswith(PUBLIC_ROOT_MIRROR_PREFIXES) and alias not in by_name:
+                        raise RuntimeError(f"Update public mirror missing alias: {alias}")
+                elif name.startswith(PUBLIC_ROOT_MIRROR_PREFIXES):
+                    canonical_source = "backend/public/" + name
+                    source = by_name.get(canonical_source)
+                    if source is None:
+                        raise RuntimeError(f"Update public mirror missing canonical source: {name}")
+                    if source.file_size != member.file_size:
+                        raise RuntimeError(f"Update public mirror content mismatch: {name}")
+                    # Compare real decompressed bytes rather than trusting the
+                    # mutable CRC/size metadata of an attacker-replaced archive.
+                    with archive.open(canonical_source) as source_stream:
+                        with archive.open(name) as mirror_stream:
+                            while True:
+                                source_bytes = source_stream.read(1024 * 1024)
+                                mirror_bytes = mirror_stream.read(1024 * 1024)
+                                if source_bytes != mirror_bytes:
+                                    raise RuntimeError(f"Update public mirror content mismatch: {name}")
+                                if not source_bytes:
+                                    break
         return expected_hash
     except (OSError, UnicodeError, ValueError, zipfile.BadZipFile) as exc:
         raise RuntimeError("Update release staged artifact consistency check failed.") from exc
