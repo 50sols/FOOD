@@ -1210,6 +1210,120 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_rfq_detail_denies_late_quote_amount_invitation_status_and_supplier_name_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'P135-RFQ-DETAIL-SNAPSHOT');
+        $directory = app(SupplierDirectory::class);
+        $requests = app(PurchaseRequestManager::class);
+        $completion = app(ProcurementCompletionManager::class);
+
+        $armed = false;
+        $injected = false;
+        $mutation = [];
+        DB::listen(static function ($query) use (&$armed, &$injected, &$mutation): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $injected || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_suppliers')
+                || ! str_contains($sql, $mutation['select_table'] ?? 'never-match')
+                || ! str_contains($sql, 'order by')) {
+                return;
+            }
+
+            // Trigger only AFTER the real joined quote/invitation SELECT,
+            // not in the authorization preflight. This is deterministic
+            // same-connection interleaving, not a two-session MySQL proof.
+            $armed = false;
+            $injected = true;
+            DB::table($mutation['table'])->where('id', $mutation['id'])
+                ->update([$mutation['field'] => $mutation['next']]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'P135-RFQ-DETAIL-'.strtoupper($locale),
+                'name_en' => 'Confidential supplier '.$locale,
+            ]);
+            $request = $requests->create($actor, $context, [
+                'currency_code' => 'KWD',
+                'reason' => 'RFQ confidential detail snapshot '.$locale,
+                'lines' => [[
+                    'item_code' => 'P135-RFQ-DETAIL-'.strtoupper($locale),
+                    'description' => 'Quotation line',
+                    'quantity' => 1,
+                    'unit' => 'each',
+                    'estimated_unit_cost' => 5.000,
+                ]],
+            ]);
+            $requests->submit($actor, $context, $request->id);
+            $rfq = $completion->createRfq($actor, $context, $request->id, [
+                'title' => 'Private supplier quotation '.$locale,
+            ]);
+            $token = $completion->publishRfq($actor, $context, $rfq->id, [$supplier->id])[0]['token'];
+            $lineId = (int) DB::table('enterprise_procurement_rfq_lines')
+                ->where('rfq_id', $rfq->id)->value('id');
+            $quote = $completion->submitPortalQuote($token, [
+                'lines' => [['rfq_line_id' => $lineId, 'unit_price' => 3.000]],
+            ]);
+            $invitationId = (int) DB::table('enterprise_procurement_rfq_invitations')
+                ->where('rfq_id', $rfq->id)->value('id');
+
+            $detail = $completion->rfqDetail($actor, $context, $rfq->id);
+            $this->assertCount(1, $detail['quotes']);
+            $this->assertCount(1, $detail['invitations']);
+            $this->assertSame((int) $quote->id, (int) $detail['quotes'][0]->id);
+            $auditBefore = DB::table('audit_logs')->count();
+            $cases = [
+                [
+                    'select_table' => 'enterprise_procurement_quotes',
+                    'table' => 'enterprise_procurement_quotes',
+                    'id' => $quote->id,
+                    'field' => 'total_amount',
+                    'next' => '77.000',
+                ],
+                [
+                    'select_table' => 'enterprise_procurement_rfq_invitations',
+                    'table' => 'enterprise_procurement_rfq_invitations',
+                    'id' => $invitationId,
+                    'field' => 'status',
+                    'next' => 'revoked',
+                ],
+                [
+                    'select_table' => 'enterprise_procurement_quotes',
+                    'table' => 'enterprise_suppliers',
+                    'id' => $supplier->id,
+                    'field' => 'name_en',
+                    'next' => 'Replaced supplier '.$locale,
+                ],
+            ];
+            foreach ($cases as $mutation) {
+                $original = DB::table($mutation['table'])->where('id', $mutation['id'])
+                    ->value($mutation['field']);
+                $injected = false;
+                $armed = true;
+                try {
+                    $completion->rfqDetail($actor, $context, $rfq->id);
+                    $this->fail('A stale RFQ quote or supplier invitation response must not escape.');
+                } catch (HttpException $exception) {
+                    $this->assertTrue($injected, 'The joined child SELECT must trigger the mutation.');
+                    $this->assertSame(404, $exception->getStatusCode());
+                } finally {
+                    $armed = false;
+                    DB::table($mutation['table'])->where('id', $mutation['id'])
+                        ->update([$mutation['field'] => $original]);
+                }
+
+                $restored = $completion->rfqDetail($actor, $context, $rfq->id);
+                $this->assertCount(1, $restored['quotes']);
+                $this->assertCount(1, $restored['invitations']);
+                $this->assertSame((int) $quote->id, (int) $restored['quotes'][0]->id);
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            }
+        }
+    }
+
     public function test_rfq_detail_denies_late_foreign_source_request_in_ar_and_en(): void
     {
         $this->enableProcurement();

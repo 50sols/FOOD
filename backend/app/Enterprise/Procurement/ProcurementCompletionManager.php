@@ -409,27 +409,63 @@ final class ProcurementCompletionManager
         $this->visibleRfq($scope, $rfqId);
         $assertCurrentSourceRequest();
 
-        // Supplier eligibility is separately mutable from the RFQ. A supplier
-        // transferred after a quote/invitation SELECT must not release cached
-        // vendor names, offer amounts or private attachment paths.
+        // Historical quote money, invitation status and vendor identity
+        // are hydrated before the final view permission recheck. Supplier
+        // eligibility counts alone cannot detect a late same-store quote
+        // amendment or invitation revocation. Compare the exact bounded
+        // projected child rows under the current supplier scope.
         foreach ([
-            [$invitations, 'enterprise_procurement_rfq_invitations', 'invitations'],
-            [$quotes, 'enterprise_procurement_quotes', 'quotes'],
-        ] as [$rows, $table, $alias]) {
+            [
+                $invitations,
+                'enterprise_procurement_rfq_invitations',
+                'invitations',
+                [
+                    'invitations.id',
+                    'invitations.supplier_id',
+                    'invitations.status',
+                    'invitations.expires_at',
+                    'invitations.last_accessed_at',
+                    'invitations.submitted_at',
+                    'suppliers.code as supplier_code',
+                    'suppliers.name_en as supplier_name_en',
+                    'suppliers.name_ar as supplier_name_ar',
+                ],
+            ],
+            [
+                $quotes,
+                'enterprise_procurement_quotes',
+                'quotes',
+                [
+                    'quotes.*',
+                    'suppliers.code as supplier_code',
+                    'suppliers.name_en as supplier_name_en',
+                    'suppliers.name_ar as supplier_name_ar',
+                ],
+            ],
+        ] as [$rows, $table, $alias, $projection]) {
             $ids = $rows->pluck('id')->all();
             if ($ids === []) {
                 continue;
             }
 
+            $expected = $rows->mapWithKeys(static fn ($row): array => [
+                (int) $row->id => (array) $row,
+            ])->sortKeys()->all();
+            $currentRows = DB::table($table.' as '.$alias)
+                ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', $alias.'.supplier_id')
+                ->where($alias.'.rfq_id', $rfqId)
+                ->whereIn($alias.'.id', $ids)
+                ->where(fn (QueryBuilder $query) => $this->scopeJoinedSupplier($query, $scope))
+                ->get($projection);
+            $current = $currentRows->mapWithKeys(static fn ($row): array => [
+                (int) $row->id => (array) $row,
+            ])->sortKeys()->all();
             abort_unless(
-                DB::table($table.' as '.$alias)
-                    ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', $alias.'.supplier_id')
-                    ->where($alias.'.rfq_id', $rfqId)
-                    ->whereIn($alias.'.id', $ids)
-                    ->where(fn (QueryBuilder $query) => $this->scopeJoinedSupplier($query, $scope))
-                    ->count() === count($ids),
+                count($expected) === $rows->count()
+                    && count($current) === $currentRows->count()
+                    && $current === $expected,
                 404,
-                'RFQ quote supplier eligibility changed during detail retrieval.',
+                'RFQ supplier, invitation or quote financial data changed during detail retrieval.',
             );
         }
 
