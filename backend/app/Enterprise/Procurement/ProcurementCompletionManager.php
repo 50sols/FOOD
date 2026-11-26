@@ -2550,6 +2550,22 @@ final class ProcurementCompletionManager
         // anchors a prefix search against fixed, parameter-bound columns.
         $prefix = str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $term).'%';
 
+        $projection = [
+            'invoices.id as purchase_invoice_id',
+            'invoices.invoice_number',
+            'invoices.supplier_invoice_number',
+            'invoices.supplier_code',
+            'invoices.total_amount',
+            'invoices.currency_code',
+            'invoices.status as invoice_status',
+            'match_reviews.id as match_review_id',
+            'match_reviews.status as match_status',
+            'match_reviews.quantity_variance',
+            'match_reviews.value_variance',
+            'match_reviews.exception_reason',
+            'match_reviews.review_note',
+        ];
+
         $page = DB::table('enterprise_purchase_invoices as invoices')
             ->leftJoin('enterprise_procurement_match_reviews as match_reviews', 'match_reviews.purchase_invoice_id', '=', 'invoices.id')
             ->where('invoices.organization_id', $scope->organizationId)
@@ -2567,39 +2583,41 @@ final class ProcurementCompletionManager
                         ->orWhereRaw("invoices.supplier_code LIKE ? ESCAPE '!'", [$prefix]);
                 }),
             )
-            ->select([
-                'invoices.id as purchase_invoice_id',
-                'invoices.invoice_number',
-                'invoices.supplier_invoice_number',
-                'invoices.supplier_code',
-                'invoices.total_amount',
-                'invoices.currency_code',
-                'invoices.status as invoice_status',
-                'match_reviews.id as match_review_id',
-                'match_reviews.status as match_status',
-                'match_reviews.quantity_variance',
-                'match_reviews.value_variance',
-                'match_reviews.exception_reason',
-                'match_reviews.review_note',
-            ])
+            ->select($projection)
             ->orderByDesc('invoices.id')
             ->paginate(max(10, min(100, $perPage)))
             ->withQueryString();
 
-        // Match exceptions expose supplier references and financial variance.
-        // Recheck the CURRENT invoice owner after the scoped page SELECT so a
-        // moved invoice cannot leak a stale former-store financial row.
-        $invoiceIds = $page->getCollection()->pluck('purchase_invoice_id')->all();
+        // Finance amounts and maker/checker match status are as sensitive as
+        // invoice ownership. A count-only recheck would disclose superseded
+        // supplier references, amounts or approval decisions from a page
+        // selected just before another transaction amended the invoice/review.
+        // Reconcile exactly the selected bounded projection, not only IDs.
+        $selectedRows = $page->getCollection();
+        $invoiceIds = $selectedRows->pluck('purchase_invoice_id')->all();
         if ($invoiceIds !== []) {
+            $snapshot = $selectedRows->mapWithKeys(static fn ($row): array => [
+                (int) $row->purchase_invoice_id => (array) $row,
+            ])->sortKeys()->all();
+            $currentRows = DB::table('enterprise_purchase_invoices as invoices')
+                ->leftJoin(
+                    'enterprise_procurement_match_reviews as match_reviews',
+                    'match_reviews.purchase_invoice_id', '=', 'invoices.id',
+                )
+                ->where('invoices.organization_id', $scope->organizationId)
+                ->where('invoices.company_id', $scope->companyId)
+                ->where('invoices.store_id', $scope->storeId)
+                ->whereIn('invoices.id', $invoiceIds)
+                ->get($projection);
+            $current = $currentRows->mapWithKeys(static fn ($row): array => [
+                (int) $row->purchase_invoice_id => (array) $row,
+            ])->sortKeys()->all();
             abort_unless(
-                DB::table('enterprise_purchase_invoices')
-                    ->where('organization_id', $scope->organizationId)
-                    ->where('company_id', $scope->companyId)
-                    ->where('store_id', $scope->storeId)
-                    ->whereIn('id', $invoiceIds)
-                    ->count() === count($invoiceIds),
+                count($snapshot) === $selectedRows->count()
+                    && count($current) === $currentRows->count()
+                    && $current === $snapshot,
                 404,
-                'Purchase invoice ownership changed during match pagination.',
+                'Purchase invoice financial or match-review snapshot changed during pagination.',
             );
         }
 

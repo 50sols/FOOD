@@ -1371,6 +1371,106 @@ final class EnterprisePurchaseInvoiceHandoffFoundationTest extends TestCase
         }
     }
 
+    public function test_three_way_match_page_refuses_late_amount_and_review_state_drift_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, $store, $context] = $this->scopedUser(
+            $this->allPermissions(), 'PINV-MATCH-LIVE-FINANCE',
+        );
+        [, $warehouse] = $this->stockTarget($store, 'PINV-MATCH-LIVE-SKU');
+        $manager = app(PurchaseInvoiceHandoffManager::class);
+        $completion = app(ProcurementCompletionManager::class);
+
+        $race = (object) [
+            'armed' => false,
+            'injected' => false,
+            'table' => '',
+            'id' => 0,
+            'field' => '',
+            'replacement' => null,
+        ];
+        // Deterministic mutation AFTER the actual ordered joined SELECT, not
+        // after the final recheck. This is not two-session MySQL certification.
+        DB::listen(static function ($query) use ($race): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $race->armed || $race->injected
+                || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_purchase_invoices')
+                || ! str_contains($sql, 'enterprise_procurement_match_reviews')
+                || ! str_contains($sql, 'order by')) {
+                return;
+            }
+
+            $race->armed = false;
+            $race->injected = true;
+            DB::table($race->table)->where('id', $race->id)
+                ->update([$race->field => $race->replacement]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $receipt = $this->postedReceipt(
+                $actor, $context, $warehouse,
+                'PINV-MATCH-FIN-SUP-'.strtoupper($locale),
+                'PINV-MATCH-LIVE-SKU', 2,
+            );
+            $invoice = $manager->createFromPostedReceipt($actor, $context, $receipt->id, [
+                'supplier_invoice_number' => 'PINV-MATCH-FIN-'.strtoupper($locale),
+                'invoice_date' => '2026-10-16',
+                'lines' => [[
+                    'goods_receipt_line_id' => $receipt->lines()->firstOrFail()->id,
+                    'quantity' => 2,
+                    'unit_price' => 1.500,
+                ]],
+            ]);
+            $matchId = (int) DB::table('enterprise_procurement_match_reviews')
+                ->where('purchase_invoice_id', $invoice->id)->value('id');
+            $this->assertGreaterThan(0, $matchId);
+            $filter = ['q' => $invoice->invoice_number];
+            $this->assertSame(1, $completion->paginateMatches($actor, $context, $filter)->total());
+
+            $cases = [
+                ['enterprise_purchase_invoices', (int) $invoice->id, 'total_amount', '999.000'],
+                ['enterprise_purchase_invoices', (int) $invoice->id, 'currency_code', 'USD'],
+                [
+                    'enterprise_purchase_invoices', (int) $invoice->id, 'supplier_invoice_number',
+                    'CHANGED-'.strtoupper($locale),
+                ],
+                ['enterprise_procurement_match_reviews', $matchId, 'status', 'rejected'],
+                ['enterprise_procurement_match_reviews', $matchId, 'value_variance', '77.250'],
+            ];
+            foreach ($cases as [$table, $id, $field, $changed]) {
+                $previous = DB::table($table)->where('id', $id)->value($field);
+                $this->assertNotEquals($previous, $changed);
+                $auditBefore = DB::table('audit_logs')->count();
+                $outboxBefore = DB::table('enterprise_outbox_messages')->count();
+
+                $race->table = $table;
+                $race->id = $id;
+                $race->field = $field;
+                $race->replacement = $changed;
+                $race->injected = false;
+                $race->armed = true;
+                try {
+                    $completion->paginateMatches($actor, $context, $filter);
+                    $this->fail('Late finance/match '.$field.' must not return a stale page in '.$locale);
+                } catch (HttpExceptionInterface $exception) {
+                    $this->assertSame(404, $exception->getStatusCode());
+                } finally {
+                    $race->armed = false;
+                }
+
+                $this->assertTrue($race->injected, 'The actual ordered match-page SELECT must trigger.');
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+                $this->assertSame($outboxBefore, DB::table('enterprise_outbox_messages')->count());
+                DB::table($table)->where('id', $id)->update([$field => $previous]);
+                $page = $completion->paginateMatches($actor, $context, $filter);
+                $this->assertSame(1, $page->total());
+                $this->assertSame((int) $invoice->id, (int) $page->items()[0]->purchase_invoice_id);
+            }
+        }
+    }
+
     public function test_invoice_detail_denies_stale_header_and_financial_lines_after_store_transfer_in_ar_and_en(): void
     {
         $this->enableProcurement();
