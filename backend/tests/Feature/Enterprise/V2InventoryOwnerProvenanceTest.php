@@ -817,24 +817,26 @@ SQL);
             $stock = $this->stock('P110-LATE-POSITION-'.strtoupper($locale));
             $actor = $this->inventoryActor($stock['store_id']);
             $auditBefore = DB::table('audit_logs')->count();
-            $armed = true;
-            $injected = false;
+            // DB listeners persist for the whole test. Give each locale its
+            // own state object so a previous listener stays permanently
+            // disarmed when the next locale exercises the same SQL shape.
+            $race = (object) ['armed' => true, 'injected' => false];
 
             // A real owner row is recorded just AFTER the original empty
             // partition SELECT. This is deterministic same-connection
             // interleaving, not independent two-session MySQL certification.
-            DB::listen(static function ($query) use (&$armed, &$injected, $stock): void {
+            DB::listen(static function ($query) use ($race, $stock): void {
                 $sql = strtolower(ltrim((string) $query->sql));
-                if (! $armed
-                    || $injected
+                if (! $race->armed
+                    || $race->injected
                     || ! str_starts_with($sql, 'select')
                     || ! str_contains($sql, 'enterprise_inventory_owner_positions')
                     || ! str_contains($sql, 'order by')) {
                     return;
                 }
 
-                $armed = false;
-                $injected = true;
+                $race->armed = false;
+                $race->injected = true;
                 DB::table('enterprise_inventory_owner_positions')->insert([
                     'inventory_id' => $stock['inventory_id'],
                     'owner_key' => 'FOODEX',
@@ -854,7 +856,7 @@ SQL);
                 $this->assertSame(404, $exception->getStatusCode());
             }
 
-            $this->assertTrue($injected, 'First ownership query must trigger the race.');
+            $this->assertTrue($race->injected, 'First ownership query must trigger the race.');
             $this->assertDatabaseHas('enterprise_inventory_owner_positions', [
                 'inventory_id' => $stock['inventory_id'],
                 'owner_key' => 'FOODEX',
