@@ -822,6 +822,27 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
             source_sha = manifest.get(field)
             if not isinstance(source_sha, str) or re.fullmatch(r"[0-9a-f]{40}", source_sha) is None:
                 raise RuntimeError(f"Update release manifest has invalid {field} provenance.")
+        # The dashboard consumes this denormalized summary separately from
+        # the canonical signed release fields. A coherent staged archive and
+        # digest must never advertise contradictory upgrade metadata.
+        if "dashboard_fields" in manifest:
+            dashboard = manifest["dashboard_fields"]
+            identity_fields = (
+                "target_version",
+                "minimum_current_version",
+                "source_commit",
+                "sha256",
+                "contains_migrations",
+                "release_notes",
+            )
+            if not isinstance(dashboard, dict) or any(
+                field not in dashboard
+                or type(dashboard[field]) is not type(manifest.get(field))
+                or dashboard[field] != manifest.get(field)
+                for field in identity_fields
+            ):
+                raise RuntimeError("Update release dashboard summary does not match canonical manifest.")
+
         delta = manifest["delta"]
         declared_count = delta.get("file_count")
         source_count = delta.get("source_file_count")

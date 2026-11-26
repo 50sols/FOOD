@@ -504,6 +504,76 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                         (output_dir / ".FOODEX-Update.publish.lock").exists()
                     )
 
+    def test_update_release_group_dashboard_summary_matches_canonical_manifest(self) -> None:
+        # The historical minimal staged ZIP fixture omits dashboard_fields;
+        # real publisher output includes it. Any present summary must reflect
+        # the authoritative version, digest, migration and release metadata.
+        def prepare(staging: Path, original: dict[str, bytes]) -> dict[str, bytes]:
+            manifest = json.loads(original["FOODEX-Update.json"])
+            manifest["release_notes"] = "Approved upgrade notes"
+            fields = (
+                "target_version",
+                "minimum_current_version",
+                "source_commit",
+                "sha256",
+                "contains_migrations",
+                "release_notes",
+            )
+            manifest["dashboard_fields"] = {field: manifest[field] for field in fields}
+            adjusted = dict(original)
+            adjusted["FOODEX-Update.json"] = (
+                json.dumps(manifest) + "\n"
+            ).encode("utf-8")
+            (staging / "FOODEX-Update.json").write_bytes(adjusted["FOODEX-Update.json"])
+            return adjusted
+
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            staging, original = self._staged_release_fixture(output_dir)
+            adjusted = prepare(staging, original)
+            builder.publish_release_bundle(staging, output_dir)
+            for name, content in adjusted.items():
+                self.assertEqual((output_dir / name).read_bytes(), content)
+
+        attacks = {
+            "target_version": ("target_version", "1.0.126"),
+            "minimum_current_version": ("minimum_current_version", "1.0.124"),
+            "source_commit": ("source_commit", "2" * 40),
+            "sha256": ("sha256", "f" * 64),
+            "contains_migrations": ("contains_migrations", True),
+            "release_notes": ("release_notes", "Forged release notes"),
+            "boolean_as_int": ("contains_migrations", 0),
+            "missing_digest": ("sha256", None),
+            "malformed_summary": (None, None),
+            "null_summary": (None, None),
+        }
+        for attack, (field, value) in attacks.items():
+            with self.subTest(attack=attack):
+                with tempfile.TemporaryDirectory() as directory:
+                    output_dir = Path(directory)
+                    staging, original = self._staged_release_fixture(output_dir)
+                    adjusted = prepare(staging, original)
+                    manifest = json.loads(adjusted["FOODEX-Update.json"])
+                    if attack == "malformed_summary":
+                        manifest["dashboard_fields"] = []
+                    elif attack == "null_summary":
+                        manifest["dashboard_fields"] = None
+                    elif attack == "missing_digest":
+                        manifest["dashboard_fields"].pop("sha256")
+                    else:
+                        manifest["dashboard_fields"][field] = value
+                    adjusted["FOODEX-Update.json"] = (
+                        json.dumps(manifest) + "\n"
+                    ).encode("utf-8")
+                    (staging / "FOODEX-Update.json").write_bytes(adjusted["FOODEX-Update.json"])
+
+                    with self.assertRaisesRegex(RuntimeError, "dashboard summary"):
+                        builder.publish_release_bundle(staging, output_dir)
+                    for name, content in adjusted.items():
+                        self.assertFalse(os.path.lexists(output_dir / name), name)
+                        self.assertEqual((staging / name).read_bytes(), content)
+                    self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
+
     def test_update_release_group_embedded_version_matches_manifest_target(self) -> None:
         # Entire ZIP/manifest/file-list/SHA256 sidecar groups agree with each
         # other. A different embedded VERSION must still fail before publish.
