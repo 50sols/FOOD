@@ -814,8 +814,33 @@ def assert_staged_release_consistency(staging_dir: Path) -> str:
         if actual_hash.hexdigest() != expected_hash:
             raise RuntimeError("Update release ZIP digest does not match manifest.")
         with zipfile.ZipFile(archive_path) as archive:
-            if archive.namelist() != filenames:
+            members = archive.infolist()
+            if [member.filename for member in members] != filenames:
                 raise RuntimeError("Update release file list does not match ZIP members.")
+
+            # Revalidate archive safety at the FINAL publication boundary.
+            # Internally consistent sidecars can all be replaced together;
+            # a matching digest/file list is not proof that ZIP paths, modes
+            # or source-owned runtime scope remain safe for extraction.
+            folded_names: set[str] = set()
+            for member in members:
+                canonical = safe_path(member.filename)
+                folded = canonical.casefold()
+                if folded in folded_names:
+                    raise RuntimeError(f"Ambiguous Update release ZIP member: {canonical}")
+                folded_names.add(folded)
+                if not (
+                    is_runtime_path(canonical)
+                    or canonical.startswith(PUBLIC_ROOT_MIRROR_PREFIXES)
+                ):
+                    raise RuntimeError(f"Non-runtime Update release ZIP member: {canonical}")
+                file_type = stat.S_IFMT(member.external_attr >> 16)
+                if (
+                    member.is_dir()
+                    or file_type not in (0, stat.S_IFREG)
+                    or (member.flag_bits & 1)
+                ):
+                    raise RuntimeError(f"Unsafe Update release ZIP member type: {canonical}")
         return expected_hash
     except (OSError, UnicodeError, ValueError, zipfile.BadZipFile) as exc:
         raise RuntimeError("Update release staged artifact consistency check failed.") from exc

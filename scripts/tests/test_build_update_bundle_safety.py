@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import os
+import stat
 from pathlib import Path
 import tempfile
 import unittest
@@ -452,6 +453,61 @@ class BuildUpdateBundleSourceSafetyTest(unittest.TestCase):
                         self.assertFalse(os.path.lexists(output_dir / name), name)
                         self.assertEqual((staged / name).read_bytes(), modified[name])
                     self.assertFalse((output_dir / ".FOODEX-Update.publish.lock").exists())
+
+    def test_update_release_group_rejects_coherent_unsafe_zip_members(self) -> None:
+        # All four sidecars are internally consistent (including SHA-256).
+        # Publication must independently reject dangerous ZIP contents even
+        # if the staged archive and manifest/file list were replaced together.
+        variants = (
+            ("traversal", "backend/public/assets/../secrets.txt"),
+            ("public_executable", "backend/public/assets/admin/shell.php"),
+            ("case_alias", "backend/ARTISAN"),
+            ("outside_runtime", "backend/private/undisclosed.txt"),
+            ("symlink", "backend/app/unsafe-link.txt"),
+        )
+        for attack, member_name in variants:
+            with self.subTest(attack=attack):
+                with tempfile.TemporaryDirectory() as temporary:
+                    output_dir = Path(temporary)
+                    staging, contents = self._staged_release_fixture(output_dir)
+                    binary = io.BytesIO()
+                    with zipfile.ZipFile(binary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                        archive.writestr("backend/artisan", b"reviewed-cli")
+                        if attack == "symlink":
+                            link = zipfile.ZipInfo(member_name)
+                            link.create_system = 3
+                            link.external_attr = (stat.S_IFLNK | 0o777) << 16
+                            archive.writestr(link, b"../../outside")
+                        else:
+                            archive.writestr(member_name, b"unreviewed-payload")
+                    zipped = binary.getvalue()
+                    digest = hashlib.sha256(zipped).hexdigest()
+                    manifest = json.loads(contents["FOODEX-Update.json"])
+                    manifest["sha256"] = digest
+                    contents["FOODEX-Update.json"] = (
+                        json.dumps(manifest) + "\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.files.txt"] = (
+                        "backend/artisan\n" + member_name + "\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.sha256.txt"] = (
+                        f"{digest}  FOODEX-Update.zip\n"
+                    ).encode("utf-8")
+                    contents["FOODEX-Update.zip"] = zipped
+                    for name, body in contents.items():
+                        (staging / name).write_bytes(body)
+
+                    with self.assertRaisesRegex(
+                        RuntimeError,
+                        "Unsafe|Non-runtime|Ambiguous|Executable",
+                    ):
+                        builder.publish_release_bundle(staging, output_dir)
+                    for name, body in contents.items():
+                        self.assertFalse(os.path.lexists(output_dir / name), name)
+                        self.assertEqual((staging / name).read_bytes(), body)
+                    self.assertFalse(
+                        (output_dir / ".FOODEX-Update.publish.lock").exists()
+                    )
 
     def test_complete_update_release_publishes_zip_last_under_exclusive_lock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
