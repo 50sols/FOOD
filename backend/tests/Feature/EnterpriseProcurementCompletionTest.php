@@ -626,7 +626,6 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
-
     public function test_rfq_create_publish_cancel_recheck_persisted_manage_deny_after_module_lock_in_ar_and_en(): void
     {
         $this->enableProcurement();
@@ -886,7 +885,7 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         $awardArmed = true;
         try {
             $completion->awardRfq($checker, $checkerContext, $rfq->id, $quote->id);
-            $this->fail('Award must not accept an expired persisted PO manage permission.');
+            $this->fail('Award must not accept a revoked persisted PO manage permission.');
         } catch (HttpException $exception) {
             $this->assertSame(403, $exception->getStatusCode());
         } finally {
