@@ -594,6 +594,85 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_contract_page_rejects_late_same_store_financial_and_supplier_changes_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'P135-CTR-PAGE-SNAPSHOT');
+        $directory = app(SupplierDirectory::class);
+        $completion = app(ProcurementCompletionManager::class);
+
+        $armed = false;
+        $injected = false;
+        $mutation = [];
+        DB::listen(static function ($query) use (&$armed, &$injected, &$mutation): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $injected || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_procurement_contracts')
+                || ! str_contains($sql, 'enterprise_suppliers')
+                || ! str_contains($sql, 'order by')) {
+                return;
+            }
+
+            // Interleave a same-scope persisted write AFTER the real joined
+            // page SQL but BEFORE the exact-snapshot recheck. This is a
+            // deterministic same-connection test, not two-session DB proof.
+            $armed = false;
+            $injected = true;
+            DB::table($mutation['table'])->where('id', $mutation['id'])
+                ->update([$mutation['field'] => $mutation['next']]);
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'P135-CTR-SNAPSHOT-'.strtoupper($locale),
+                'name_en' => 'Protected contract supplier '.$locale,
+            ]);
+            $contract = $completion->createContract($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'title' => 'Protected contract page '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->subDay()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+                'value_ceiling' => 20,
+            ]);
+            $filter = ['q' => $contract->contract_number];
+            $this->assertSame(1, $completion->paginateContracts($actor, $context, $filter)->total());
+            $auditBefore = DB::table('audit_logs')->count();
+            $cases = [
+                ['table' => 'enterprise_procurement_contracts', 'id' => $contract->id, 'field' => 'title', 'next' => 'Updated contract '.$locale],
+                ['table' => 'enterprise_procurement_contracts', 'id' => $contract->id, 'field' => 'status', 'next' => 'terminated'],
+                ['table' => 'enterprise_procurement_contracts', 'id' => $contract->id, 'field' => 'currency_code', 'next' => 'USD'],
+                ['table' => 'enterprise_procurement_contracts', 'id' => $contract->id, 'field' => 'value_ceiling', 'next' => 37],
+                ['table' => 'enterprise_suppliers', 'id' => $supplier->id, 'field' => 'name_en', 'next' => 'Renamed supplier '.$locale],
+                ['table' => 'enterprise_suppliers', 'id' => $supplier->id, 'field' => 'code', 'next' => 'P135-SUPPLIER-REPLACED-'.strtoupper($locale)],
+            ];
+            foreach ($cases as $mutation) {
+                $original = DB::table($mutation['table'])->where('id', $mutation['id'])
+                    ->value($mutation['field']);
+                $injected = false;
+                $armed = true;
+                try {
+                    $completion->paginateContracts($actor, $context, $filter);
+                    $this->fail('Late same-scope contract or supplier change must be denied.');
+                } catch (HttpException $exception) {
+                    $this->assertTrue($injected, 'The real joined page SELECT must trigger the change.');
+                    $this->assertSame(404, $exception->getStatusCode());
+                } finally {
+                    $armed = false;
+                    DB::table($mutation['table'])->where('id', $mutation['id'])
+                        ->update([$mutation['field'] => $original]);
+                }
+
+                $page = $completion->paginateContracts($actor, $context, $filter);
+                $this->assertSame(1, $page->total());
+                $this->assertSame((int) $contract->id, (int) $page->items()[0]->id);
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+            }
+        }
+    }
+
     public function test_contract_page_rejects_late_store_transfer_and_persisted_view_revoke_in_ar_and_en(): void
     {
         $this->enableProcurement();

@@ -1508,31 +1508,47 @@ final class ProcurementCompletionManager
             ->paginate(max(10, min(100, $perPage)))
             ->withQueryString();
 
-        // Supplier/contract rows are cached after their scoped SELECT. A
-        // contract transferred to another store before return must not leak
-        // its price, title, supplier or currency to the previous store.
-        // Check the at-most-100 selected IDs against current ownership once.
-        $pageIds = $page->getCollection()->pluck('id')->all();
+        // The page contains all contract fields (ceilings, lifecycle,
+        // dates and currency) plus supplier identity. A count-only owner
+        // recheck can return stale financial terms or a replaced supplier
+        // name/code after a valid joined page SELECT. Compare the entire
+        // selected, bounded projection under current ownership instead.
+        $selectedRows = $page->getCollection();
+        $pageIds = $selectedRows->pluck('id')->all();
         if ($pageIds !== []) {
+            $expected = $selectedRows->mapWithKeys(static fn ($row): array => [
+                (int) $row->id => (array) $row,
+            ])->sortKeys()->all();
+            $currentRows = DB::table('enterprise_procurement_contracts as contracts')
+                ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
+                ->where('contracts.organization_id', $scope->organizationId)
+                ->where('contracts.company_id', $scope->companyId)
+                ->where('contracts.store_id', $scope->storeId)
+                ->where('suppliers.organization_id', $scope->organizationId)
+                ->where('suppliers.company_id', $scope->companyId)
+                ->where(function ($query) use ($scope): void {
+                    $query->where('suppliers.scope_type', 'company')
+                        ->orWhere(function ($store) use ($scope): void {
+                            $store->where('suppliers.scope_type', 'store')
+                                ->where('suppliers.store_id', $scope->storeId);
+                        });
+                })
+                ->whereIn('contracts.id', $pageIds)
+                ->get([
+                    'contracts.*',
+                    'suppliers.code as supplier_code',
+                    'suppliers.name_en as supplier_name_en',
+                    'suppliers.name_ar as supplier_name_ar',
+                ]);
+            $current = $currentRows->mapWithKeys(static fn ($row): array => [
+                (int) $row->id => (array) $row,
+            ])->sortKeys()->all();
             abort_unless(
-                DB::table('enterprise_procurement_contracts as contracts')
-                    ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
-                    ->where('contracts.organization_id', $scope->organizationId)
-                    ->where('contracts.company_id', $scope->companyId)
-                    ->where('contracts.store_id', $scope->storeId)
-                    ->where('suppliers.organization_id', $scope->organizationId)
-                    ->where('suppliers.company_id', $scope->companyId)
-                    ->where(function ($query) use ($scope): void {
-                        $query->where('suppliers.scope_type', 'company')
-                            ->orWhere(function ($store) use ($scope): void {
-                                $store->where('suppliers.scope_type', 'store')
-                                    ->where('suppliers.store_id', $scope->storeId);
-                            });
-                    })
-                    ->whereIn('contracts.id', $pageIds)
-                    ->count() === count($pageIds),
+                count($expected) === $selectedRows->count()
+                    && count($current) === $currentRows->count()
+                    && $current === $expected,
                 404,
-                'Procurement contract or supplier ownership changed during pagination.',
+                'Procurement contract or supplier financial snapshot changed during pagination.',
             );
         }
 
