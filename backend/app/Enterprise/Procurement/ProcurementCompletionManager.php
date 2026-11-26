@@ -1590,30 +1590,56 @@ final class ProcurementCompletionManager
             ])
             ->all();
 
-        // A scoped contract may move during the option SELECT; never return
-        // a cached former-store supplier identity, currency or expiry date.
+        // The initial scoped query can be made stale by status, eligibility,
+        // financial term or supplier identity changes without changing the
+        // scoped row count. Recheck the exact <=100 selected option snapshots.
         $contractIds = array_map(static fn ($contract): int => (int) $contract->id, $contracts);
         if ($contractIds !== []) {
+            $currentOptions = DB::table('enterprise_procurement_contracts as contracts')
+                ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
+                ->where('contracts.organization_id', $scope->organizationId)
+                ->where('contracts.company_id', $scope->companyId)
+                ->where('contracts.store_id', $scope->storeId)
+                ->where('suppliers.organization_id', $scope->organizationId)
+                ->where('suppliers.company_id', $scope->companyId)
+                ->where(function ($query) use ($scope): void {
+                    $query->where('suppliers.scope_type', 'company')
+                        ->orWhere(function ($store) use ($scope): void {
+                            $store->where('suppliers.scope_type', 'store')
+                                ->where('suppliers.store_id', $scope->storeId);
+                        });
+                })
+                ->whereIn('contracts.id', $contractIds)
+                ->where('contracts.status', 'active')
+                ->whereDate('contracts.starts_on', '<=', now()->toDateString())
+                ->whereDate('contracts.ends_on', '>=', now()->toDateString())
+                ->get([
+                    'contracts.id',
+                    'contracts.contract_number',
+                    'contracts.title',
+                    'contracts.supplier_id',
+                    'contracts.currency_code',
+                    'contracts.ends_on',
+                    'suppliers.code as supplier_code',
+                ])
+                ->keyBy('id');
+
             abort_unless(
-                DB::table('enterprise_procurement_contracts as contracts')
-                    ->join('enterprise_suppliers as suppliers', 'suppliers.id', '=', 'contracts.supplier_id')
-                    ->where('contracts.organization_id', $scope->organizationId)
-                    ->where('contracts.company_id', $scope->companyId)
-                    ->where('contracts.store_id', $scope->storeId)
-                    ->where('suppliers.organization_id', $scope->organizationId)
-                    ->where('suppliers.company_id', $scope->companyId)
-                    ->where(function ($query) use ($scope): void {
-                        $query->where('suppliers.scope_type', 'company')
-                            ->orWhere(function ($store) use ($scope): void {
-                                $store->where('suppliers.scope_type', 'store')
-                                    ->where('suppliers.store_id', $scope->storeId);
-                            });
-                    })
-                    ->whereIn('contracts.id', $contractIds)
-                    ->count() === count($contractIds),
+                $currentOptions->count() === count($contracts),
                 404,
-                'Procurement contract or supplier ownership changed during option lookup.',
+                'Procurement contract eligibility or ownership changed during option lookup.',
             );
+            foreach ($contracts as $contract) {
+                $current = $currentOptions->get($contract->id);
+                abort_unless($current !== null, 404, 'Procurement contract changed during option lookup.');
+                foreach (['contract_number', 'title', 'supplier_id', 'currency_code', 'ends_on', 'supplier_code'] as $field) {
+                    abort_unless(
+                        (string) $current->{$field} === (string) $contract->{$field},
+                        404,
+                        'Procurement contract financial terms changed during option lookup.',
+                    );
+                }
+            }
         }
 
         // Agreement dates, supplier identity and currency are sensitive even

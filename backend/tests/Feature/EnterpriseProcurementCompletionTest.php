@@ -415,6 +415,105 @@ final class EnterpriseProcurementCompletionTest extends TestCase
         }
     }
 
+    public function test_contract_options_reject_late_eligibility_and_terms_changes_in_ar_and_en(): void
+    {
+        $this->enableProcurement();
+        [$actor, , $context] = $this->scopedUser($this->allPermissions(), 'P135-CTR-TERMS-LIVE');
+        $directory = app(SupplierDirectory::class);
+        $completion = app(ProcurementCompletionManager::class);
+
+        $armed = false;
+        $changed = false;
+        $targetContract = null;
+        $targetSupplier = null;
+        $mutation = '';
+        $mutations = [
+            'status' => ['status' => 'terminated'],
+            'start_date' => ['starts_on' => now()->addDays(2)->toDateString()],
+            'expiry' => ['ends_on' => now()->subDay()->toDateString()],
+            'currency' => ['currency_code' => 'USD'],
+            'title' => ['title' => 'Late replaced contract title'],
+        ];
+        DB::listen(static function ($query) use (&$armed, &$changed, &$targetContract, &$targetSupplier, &$mutation, $mutations): void {
+            $sql = strtolower(ltrim((string) $query->sql));
+            if (! $armed || $changed || $targetContract === null || $targetSupplier === null
+                || ! str_starts_with($sql, 'select')
+                || ! str_contains($sql, 'enterprise_procurement_contracts')
+                || ! str_contains($sql, 'enterprise_suppliers')
+                || ! str_contains($sql, 'order by')) {
+                return;
+            }
+
+            // Change persisted data after the joined option SELECT but before
+            // the current-value recheck, not just before a cached preflight.
+            $armed = false;
+            $changed = true;
+            if ($mutation === 'supplier_code') {
+                DB::table('enterprise_suppliers')->where('id', $targetSupplier)
+                    ->update(['code' => 'P135-LATE-CODE-CHANGED']);
+            } else {
+                DB::table('enterprise_procurement_contracts')->where('id', $targetContract)
+                    ->update($mutations[$mutation]);
+            }
+        });
+
+        foreach (['ar', 'en'] as $locale) {
+            app()->setLocale($locale);
+            $supplier = $directory->create($actor, $context, [
+                'scope_type' => 'store',
+                'code' => 'P135-OPTIONS-TERMS-'.strtoupper($locale),
+                'name_en' => 'Live supplier terms '.$locale,
+            ]);
+            $contract = $completion->createContract($actor, $context, [
+                'supplier_id' => $supplier->id,
+                'title' => 'Current contract terms '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->subDay()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+            ]);
+            $original = [
+                'status' => 'active',
+                'title' => 'Current contract terms '.$locale,
+                'currency_code' => 'KWD',
+                'starts_on' => now()->subDay()->toDateString(),
+                'ends_on' => now()->addDays(30)->toDateString(),
+            ];
+            $targetContract = (int) $contract->id;
+            $targetSupplier = (int) $supplier->id;
+            DB::table('enterprise_procurement_contracts')->where('id', $targetContract)
+                ->update(['status' => 'active']);
+
+            $this->assertCount(1, $completion->activeContractOptions($actor, $context, $targetSupplier));
+            $auditBefore = DB::table('audit_logs')->count();
+            foreach (['status', 'start_date', 'expiry', 'currency', 'title', 'supplier_code'] as $change) {
+                $mutation = $change;
+                $changed = false;
+                $armed = true;
+                try {
+                    $completion->activeContractOptions($actor, $context, $targetSupplier);
+                    $this->fail('Late '.$change.' must deny stale contract options in '.$locale);
+                } catch (HttpException $exception) {
+                    $this->assertSame(404, $exception->getStatusCode());
+                } finally {
+                    $armed = false;
+                }
+                $this->assertTrue($changed, 'The real scoped options SELECT must trigger '.$change);
+                $this->assertSame($auditBefore, DB::table('audit_logs')->count());
+
+                DB::table('enterprise_procurement_contracts')->where('id', $targetContract)
+                    ->update($original);
+                DB::table('enterprise_suppliers')->where('id', $targetSupplier)
+                    ->update(['code' => $supplier->code]);
+                $restored = $completion->activeContractOptions($actor, $context, $targetSupplier);
+                $this->assertCount(1, $restored);
+                $this->assertSame($targetContract, (int) $restored[0]->id);
+                $this->assertSame('KWD', $restored[0]->currency_code);
+            }
+            $targetContract = null;
+            $targetSupplier = null;
+        }
+    }
+
     public function test_contract_page_rejects_late_store_transfer_and_persisted_view_revoke_in_ar_and_en(): void
     {
         $this->enableProcurement();
