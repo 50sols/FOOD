@@ -248,7 +248,16 @@ final class UpdatePackageValidator
                 '.git-credentials', 'azureprofile.json', 'accesstokens.json',
                 'terraform.tfstate', 'terraform.tfstate.backup',
                 'application_default_credentials.json',
-            ], true) || ($index > 0 && strtolower($components[$index - 1]) === '.config'
+                '.aws', '.ssh', '.docker', '.kube', '.gnupg', '.azure', '.terraform',
+                'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa',
+                'credentials.json', 'client_secret.json',
+                'service-account.json', 'service_account.json',
+            ], true) || str_ends_with($folded, '.key')
+                || str_ends_with($folded, '.p12')
+                || str_ends_with($folded, '.pfx')
+                || (str_ends_with($folded, '.pem')
+                    && (str_contains($folded, 'private') || str_contains($folded, 'secret')))
+                || ($index > 0 && strtolower($components[$index - 1]) === '.config'
                 && in_array($folded, ['git', 'gh', 'gcloud'], true))) {
                 throw new InvalidArgumentException('Update archive targets a protected credential path.');
             }
