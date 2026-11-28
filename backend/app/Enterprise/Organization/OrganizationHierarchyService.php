@@ -69,8 +69,29 @@ final class OrganizationHierarchyService
         Store $store,
         ?Authenticatable $actor = null,
     ): EnterpriseStoreScope {
+        // A caller can mutate an Eloquent primary key without saving it.
+        // Historical scope lookup must use the persisted store identity, not
+        // the dirty model key, or a foreign store may be returned as "already
+        // provisioned" without executing the canonical assignment guard.
+        $originalStoreId = $store->getRawOriginal($store->getKeyName());
+        $persistedStore = $originalStoreId === null
+            ? null
+            : Store::query()->whereKey($originalStoreId)->first();
+        if (! $persistedStore instanceof Store) {
+            throw new LogicException('Cannot provision enterprise scope for a missing persisted store.');
+        }
+        $store = $persistedStore;
+
         $existing = EnterpriseStoreScope::query()->where('store_id', $store->getKey())->first();
         if ($existing instanceof EnterpriseStoreScope) {
+            // An existing binding is historical ownership, not current
+            // operational authority. Reject an inactive persisted store or
+            // disabled ancestor before callers reuse this idempotent result
+            // for feature provisioning or an enterprise entitlement.
+            if ($this->scopeForStore((int) $store->getKey()) === null) {
+                throw new LogicException('Cannot reuse enterprise scope for an inactive store or hierarchy.');
+            }
+
             return $existing;
         }
 
@@ -79,7 +100,11 @@ final class OrganizationHierarchyService
             ->whereHas('legalEntity.company.organization', function ($query): void {
                 $query->where('code', self::DEFAULT_ORGANIZATION);
             })
-            ->firstOrFail();
+            // The code is scoped per legal entity, not per organization.
+            // More than one default-code unit within the owner organization
+            // must fail closed: first() could assign a new store to an
+            // arbitrary legal entity and silently change its ERP scope.
+            ->sole();
 
         return $this->assignStore($store, $businessUnit, $actor);
     }
@@ -88,15 +113,28 @@ final class OrganizationHierarchyService
         Store $store,
         EnterpriseBusinessUnit $businessUnit,
         ?Authenticatable $actor = null,
+        ?callable $authorizeBeforeMutation = null,
     ): EnterpriseStoreScope {
-        return DB::transaction(function () use ($store, $businessUnit, $actor): EnterpriseStoreScope {
-            // Enforce the active enterprise lineage at the canonical scope
-            // writer, not only in optional Admin wrappers. Both explicit
-            // assignments and default provisioning pass through here.
-            // Refresh both the unit and its ancestry from the database.
-            // Previously preloaded relationships could remain stale after a
-            // parent was deactivated, bypassing this canonical write guard.
-            $businessUnit->refresh()->load('legalEntity.company.organization');
+        return DB::transaction(function () use ($store, $businessUnit, $actor, $authorizeBeforeMutation): EnterpriseStoreScope {
+            // The canonical writer is also used outside the Admin wrapper.
+            // Rebind BOTH identities by their originally loaded database keys:
+            // refresh() and getKey() on a dirty Eloquent instance may point
+            // to an unrelated Store or Business Unit, violating tenant scope.
+            // Hold these rows for the full assignment transaction.
+            $originalUnitId = $businessUnit->getRawOriginal($businessUnit->getKeyName());
+            $originalStoreId = $store->getRawOriginal($store->getKeyName());
+            $businessUnit = $originalUnitId === null
+                ? null
+                : EnterpriseBusinessUnit::query()->whereKey($originalUnitId)->lockForUpdate()->first();
+            $store = $originalStoreId === null
+                ? null
+                : Store::query()->whereKey($originalStoreId)->lockForUpdate()->first();
+            if (! $businessUnit instanceof EnterpriseBusinessUnit || ! $store instanceof Store) {
+                throw new LogicException('Cannot assign store scope to a missing persisted hierarchy identity.');
+            }
+
+            // Re-read live lineage instead of accepting cached ancestors.
+            $businessUnit->load('legalEntity.company.organization');
             if (! $businessUnit->is_active
                 || ! $businessUnit->legalEntity->is_active
                 || ! $businessUnit->legalEntity->company->is_active
@@ -131,8 +169,31 @@ final class OrganizationHierarchyService
                 }
 
                 if ((int) $existing->business_unit_id === (int) $businessUnit->getKey()) {
+                    // The admin wrapper must also authorize current persisted
+                    // permissions after all locked scope reads, even for a
+                    // non-mutating idempotent retry of the assignment.
+                    if ($authorizeBeforeMutation !== null) {
+                        $authorizeBeforeMutation();
+                    }
+
                     return $existing;
                 }
+            }
+
+            // Historical ownership must be checked before store lifecycle:
+            // even a disabled store cannot evade a cross-organization denial.
+            // No new/changed binding is allowed for an inactive persisted store.
+            // The identity and lifecycle were re-read under the same row lock.
+            if (! $store->is_active) {
+                throw new LogicException('Cannot assign enterprise scope to an inactive store.');
+            }
+
+            // Scope/lineage SELECTs above can outlive a live permission revoke.
+            // Keep the admin authorization callback inside the write
+            // transaction, immediately before scope persistence and audit.
+            // Other trusted internal callers may omit this callback.
+            if ($authorizeBeforeMutation !== null) {
+                $authorizeBeforeMutation();
             }
 
             $scope = EnterpriseStoreScope::query()->updateOrCreate(

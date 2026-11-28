@@ -20,6 +20,105 @@ SOURCE_DATE_EPOCH = 1731758400
 
 
 class DeterministicSetupZipTest(unittest.TestCase):
+    def test_private_key_and_service_credentials_fail_before_setup_zip_staging(self) -> None:
+        # Dirty release source must not serialize private or cloud keys.
+        cases = (
+            "backend/config/private.key",
+            "backend/config/CLIENT.P12",
+            "backend/resources/admin/client.PFX",
+            "backend/id_ed25519",
+            "backend/config/SERVICE-ACCOUNT.JSON",
+            "backend/config/client_secret.json",
+            "backend/resources/admin/secrets.pem",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            for number, member in enumerate(cases):
+                with self.subTest(member=member):
+                    stage = base / f"private-credential-{number}"
+                    stage.mkdir()
+                    (stage / "VERSION").write_text("1.0.127\n", encoding="utf-8")
+                    leaked = stage / member
+                    leaked.parent.mkdir(parents=True, exist_ok=True)
+                    leaked.write_bytes(b"DO-NOT-PUBLISH-PRIVATE-MATERIAL")
+                    archive = base / f"private-credential-{number}.zip"
+                    with mock.patch(
+                        "v2_build_setup_zip.tempfile.mkstemp",
+                        side_effect=AssertionError("Private credentials must fail before ZIP staging"),
+                    ):
+                        with self.assertRaisesRegex(SetupBuildError, "Private key or service credentials"):
+                            build_setup_zip(stage, archive, SOURCE_DATE_EPOCH)
+                    self.assertFalse(archive.exists())
+                    self.assertEqual(leaked.read_bytes(), b"DO-NOT-PUBLISH-PRIVATE-MATERIAL")
+
+    def test_credential_home_paths_are_rejected_before_any_setup_zip_staging(self) -> None:
+        # The producer must reject itself: verifier-only checks are too late
+        # once a temporary ZIP has already serialized sensitive bytes.
+        examples = (
+            "backend/resources/admin/.aws/credentials",
+            "backend/resources/admin/.SSH/config",
+            "backend/public/assets/.docker/config.json",
+            "backend/resources/admin/.kube/config",
+            "backend/resources/admin/.gnupg/pubring.kbx",
+            "backend/public/assets/.AZURE/azureProfile.json",
+            "backend/resources/admin/.terraform/terraform.tfstate",
+            "backend/resources/admin/.git-credentials",
+            "backend/public/assets/application_default_credentials.json",
+            "backend/resources/admin/accessTokens.json",
+            "backend/resources/admin/terraform.tfstate.backup",
+            "backend/public/assets/.config/gcloud/credentials.db",
+            "backend/resources/admin/.CONFIG/GCLOUD/credentials.db",
+            "backend/public/assets/.config/gh/hosts.yml",
+            "backend/resources/admin/.CONFIG/GH/hosts.yml",
+            "backend/public/assets/.config/git/credentials",
+            "backend/resources/admin/.CONFIG/GIT/config",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            for index, member in enumerate(examples):
+                with self.subTest(member=member):
+                    root = base / f"credential-root-{index}"
+                    root.mkdir()
+                    (root / "VERSION").write_text("1.0.127\\n", encoding="utf-8")
+                    unsafe = root / member
+                    unsafe.parent.mkdir(parents=True, exist_ok=True)
+                    unsafe.write_bytes(b"DO-NOT-SERIALIZE-CLOUD-TOKENS")
+                    output = base / f"credential-root-{index}.zip"
+                    with mock.patch(
+                        "v2_build_setup_zip.tempfile.mkstemp",
+                        side_effect=AssertionError("Never create a ZIP before rejecting credential homes"),
+                    ):
+                        with self.assertRaisesRegex(SetupBuildError, "Credential storage"):
+                            build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+                    self.assertFalse(output.exists())
+
+    def test_empty_credential_home_directory_is_rejected_before_archive_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "source"
+            (root / "backend/resources/admin/.aws").mkdir(parents=True)
+            (root / "VERSION").write_text("1.0.127\\n", encoding="utf-8")
+            output = Path(temporary) / "setup.zip"
+            with mock.patch(
+                "v2_build_setup_zip.tempfile.mkstemp",
+                side_effect=AssertionError("Do not stage credential directories"),
+            ):
+                with self.assertRaisesRegex(SetupBuildError, "Credential storage"):
+                    build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+            self.assertFalse(output.exists())
+
+    def test_public_ca_pem_and_ssh_pubkey_are_not_private_material(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            stage = Path(temporary) / "source"
+            (stage / "backend/public/assets").mkdir(parents=True)
+            (stage / "VERSION").write_text("1.0.127\n", encoding="utf-8")
+            (stage / "backend/public/assets/cacert.pem").write_bytes(b"PUBLIC CA")
+            (stage / "backend/public/assets/id_ed25519.pub").write_bytes(b"PUBLIC SSH KEY")
+            archive = Path(temporary) / "safe-public.zip"
+            self.assertEqual(len(build_setup_zip(stage, archive, SOURCE_DATE_EPOCH)), 64)
+            with zipfile.ZipFile(archive) as content:
+                self.assertIn("backend/public/assets/cacert.pem", content.namelist())
+                self.assertIn("backend/public/assets/id_ed25519.pub", content.namelist())
+
     def test_package_manager_credentials_are_rejected_before_any_zip_creation(self) -> None:
         # Composer/npm tokens must never reach the temporary ZIP. Match file
         # names case-insensitively at any depth, including hidden config dirs.
@@ -106,6 +205,34 @@ class DeterministicSetupZipTest(unittest.TestCase):
                                 build_setup_zip(root, output, SOURCE_DATE_EPOCH)
                     self.assertFalse(output.exists())
                     self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
+
+    def test_clean_env_template_swapped_to_secret_after_preflight_is_not_packaged(self) -> None:
+        # Preflight parses the clean example before mkstemp. A later change
+        # must not become a new trusted metadata baseline during packaging.
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "source"
+            env_file = root / "backend/.env.example"
+            env_file.parent.mkdir(parents=True)
+            env_file.write_bytes(b"APP_KEY=\nDB_PASSWORD=\n")
+            (root / "VERSION").write_bytes(b"1.0.1\n")
+            output = base / "setup.zip"
+            original_mkstemp = tempfile.mkstemp
+
+            def replace_after_preflight(*args, **kwargs):
+                descriptor, temporary_name = original_mkstemp(*args, **kwargs)
+                env_file.write_bytes(b"APP_KEY=base64:injected-secret\nDB_PASSWORD=\n")
+                return descriptor, temporary_name
+
+            def open_fixture_member(path, meta, name, source_root):
+                return path.open("rb")
+
+            with mock.patch("v2_build_setup_zip._open_verified_member", side_effect=open_fixture_member):
+                with mock.patch("v2_build_setup_zip.tempfile.mkstemp", side_effect=replace_after_preflight):
+                    with self.assertRaisesRegex(SetupBuildError, "changed after preflight"):
+                        build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+            self.assertFalse(output.exists())
+            self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
 
     def test_empty_env_secrets_and_redis_null_are_allowed_in_setup_staging(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -420,6 +547,66 @@ class DeterministicSetupZipTest(unittest.TestCase):
                 create.assert_not_called()
             self.assertFalse(output.exists())
 
+    def test_public_static_asset_executables_fail_before_setup_zip_creation(self) -> None:
+        # Compiled assets are read-only static content. A dirty staging copy
+        # must not turn a signed Setup ZIP into a PHP/script dropper.
+        cases = (
+            "backend/public/assets/admin/shell.php",
+            "backend/public/preview/customer/dropper.php.jpg",
+            "backend/public/assets/admin/.htaccess",
+            "backend/public/assets/admin/.user.ini",
+            "backend/public/assets/admin/web.config",
+            "backend/public/js/hidden.phtml",
+            "backend/public/brand/backdoor.phar",
+            "public/assets/admin/shell.php",
+            "public/preview/customer/dropper.php.jpg",
+            "public/js/.htaccess",
+            "public/.user.ini",
+            "PUBLIC/ASSETS/admin/web.config",
+            "PUBLIC/js/hidden.PHTML",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            for index, name in enumerate(cases):
+                with self.subTest(name=name):
+                    root = base / f"source-{index}"
+                    root.mkdir()
+                    (root / "VERSION").write_bytes(b"1.0.1\\n")
+                    unsafe = root / name
+                    unsafe.parent.mkdir(parents=True)
+                    unsafe.write_bytes(b"NOT-AN-ASSET")
+                    output = base / f"setup-{index}.zip"
+                    with mock.patch(
+                        "v2_build_setup_zip.tempfile.mkstemp",
+                        side_effect=AssertionError("No temporary ZIP before source path rejection"),
+                    ):
+                        with self.assertRaisesRegex(SetupBuildError, "Executable public static asset"):
+                            build_setup_zip(root, output, SOURCE_DATE_EPOCH)
+                    self.assertFalse(output.exists())
+                    self.assertEqual(unsafe.read_bytes(), b"NOT-AN-ASSET")
+            self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
+
+    def test_root_public_mirror_keeps_laravel_bootstrap_and_static_assets(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "source"
+            root.mkdir()
+            (root / "VERSION").write_bytes(b"1.0.1\n")
+            for name, payload in (
+                ("public/index.php", b"<?php // bootstrap"),
+                ("public/.htaccess", b"RewriteEngine On"),
+                ("public/assets/admin/app.css", b"body {}"),
+            ):
+                file = root / name
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_bytes(payload)
+            output = base / "setup.zip"
+            with mock.patch("v2_build_setup_zip._open_verified_member", side_effect=lambda path, *_: path.open("rb")):
+                self.assertEqual(64, len(build_setup_zip(root, output, SOURCE_DATE_EPOCH)))
+            with zipfile.ZipFile(output) as archive:
+                for name in ("public/index.php", "public/.htaccess", "public/assets/admin/app.css"):
+                    self.assertIn(name, archive.namelist())
+
     def test_nonportable_zip_names_fail_before_temp_archive_creation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -639,6 +826,48 @@ class DeterministicSetupZipTest(unittest.TestCase):
                 with self.assertRaisesRegex(SetupBuildError, "changed before packaging"):
                     build_setup_zip(stage, output, SOURCE_DATE_EPOCH)
             self.assertFalse(output.exists(), "Symlinked secrets must not be archived")
+
+    def test_fifo_replaced_after_preflight_cannot_hang_or_publish_setup_zip(self) -> None:
+        # A preflighted regular file can be swapped with a named pipe before
+        # the secure fd-relative source open. O_RDONLY without O_NONBLOCK
+        # would hang forever waiting for an attacker-controlled FIFO writer.
+        if not hasattr(os, "mkfifo") or not hasattr(os, "O_NONBLOCK"):
+            self.skipTest("FIFO/nonblocking source opens unavailable on this platform")
+        if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
+            self.skipTest("Safe fd-relative source opens unavailable on this platform")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            stage = base / "source"
+            stage.mkdir()
+            source = stage / "VERSION"
+            source.write_bytes(b"1.0.1\\n")
+            output = base / "setup.zip"
+            original_bytes = source.read_bytes()
+            from v2_build_setup_zip import _open_verified_member
+
+            swapped = False
+
+            def swap_checked_file_for_fifo(path, meta, name, source_root):
+                nonlocal swapped
+                if name == "VERSION" and not swapped:
+                    swapped = True
+                    path.rename(stage / "VERSION.reviewed")
+                    try:
+                        os.mkfifo(path)
+                    except OSError as exc:
+                        self.skipTest(f"Cannot create FIFO on this platform: {exc}")
+                return _open_verified_member(path, meta, name, source_root)
+
+            with mock.patch("v2_build_setup_zip._open_verified_member", side_effect=swap_checked_file_for_fifo):
+                with self.assertRaisesRegex(SetupBuildError, "changed before packaging"):
+                    build_setup_zip(stage, output, SOURCE_DATE_EPOCH)
+
+            self.assertTrue(swapped)
+            self.assertFalse(output.exists(), "Never publish an archive after FIFO source replacement")
+            self.assertEqual((stage / "VERSION.reviewed").read_bytes(), original_bytes)
+            self.assertEqual(list(base.glob(".v2-setup-*.zip")), [])
+
 
     def test_parent_directory_symlink_swap_never_packages_external_file(self) -> None:
         if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:

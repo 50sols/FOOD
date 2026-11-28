@@ -49,7 +49,9 @@ final class V2UpdateDotenvArchiveGuardTest extends TestCase
                 $this->fail('ZIP preflight accepted a protected runtime path: '.$path);
             } catch (RuntimeException $exception) {
                 $this->assertSame(
-                    'Update archive targets a protected runtime path.',
+                    $path === 'backend/Storage/app/private/credentials.json'
+                        ? 'Update archive targets a protected credential path.'
+                        : 'Update archive targets a protected runtime path.',
                     $exception->getMessage(),
                     'ZIP preflight rejected an archive for an unexpected reason: '.$path,
                 );

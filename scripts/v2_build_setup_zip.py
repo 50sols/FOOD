@@ -28,11 +28,37 @@ MAX_ENTRIES = 100_000
 MAX_ENTRY_SIZE = 512 * 1024 * 1024
 MAX_TOTAL_SIZE = 4 * 1024 * 1024 * 1024
 
+# Keep the producer at least as strict as the independent G004 ZIP verifier:
+# client credential homes and their generic config/state files must never be
+# copied into a temporary archive, even in a dirty release staging checkout.
+CREDENTIAL_STORAGE_PARTS = frozenset({
+    ".aws", ".ssh", ".docker", ".kube", ".gnupg", ".azure", ".terraform",
+    ".git-credentials", "application_default_credentials.json",
+    "azureprofile.json", "accesstokens.json", "terraform.tfstate",
+    "terraform.tfstate.backup",
+})
+
 # Shared-host extractors may interpret these names differently or refuse them.
 RESERVED_DEVICE = re.compile(
     r"^(?:con|conin\$|conout\$|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\..*)?$",
     re.IGNORECASE,
 )
+
+
+def _is_sensitive_private_file(name: str) -> bool:
+    """Reject key material without blocking public CA bundles or SSH .pub files."""
+    lower = name.casefold()
+    return (
+        lower in {
+            "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
+            "credentials.json", "client_secret.json",
+            "service-account.json", "service_account.json",
+        }
+        or lower.endswith((".key", ".p12", ".pfx"))
+        or (lower.endswith(".pem") and any(
+            marker in lower for marker in ("private", "secret")
+        ))
+    )
 
 
 def _zip_timestamp(epoch: int) -> tuple[int, int, int, int, int, int]:
@@ -54,7 +80,12 @@ def _open_verified_member(path: Path, meta: os.stat_result, name: str, source_ro
     # directory being swapped for a symlink after the rglob scan. Traverse
     # from the trusted root using dirfd-relative opens; each component must
     # still be a real directory when it is opened.
-    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW") or os.open not in os.supports_dir_fd:
+    if (
+        not hasattr(os, "O_DIRECTORY")
+        or not hasattr(os, "O_NOFOLLOW")
+        or not hasattr(os, "O_NONBLOCK")
+        or os.open not in os.supports_dir_fd
+    ):
         raise SetupBuildError("Safe directory-relative Setup staging opens are unavailable.")
     parts = Path(name).parts
     if not parts or any(part in ("", ".", "..") for part in parts):
@@ -69,7 +100,10 @@ def _open_verified_member(path: Path, meta: os.stat_result, name: str, source_ro
             os.close(directory_fd)
             directory_fd = child_fd
         descriptor = os.open(
-            parts[-1], os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_BINARY", 0),
+            parts[-1],
+            # O_NONBLOCK prevents a checked regular file replaced with a FIFO
+            # from blocking forever before fstat rejects its changed type.
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_BINARY", 0),
             dir_fd=directory_fd,
         )
         opened = os.fstat(descriptor)
@@ -138,6 +172,9 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
     # loop can start compressing an oversized tree before rejecting it.
     preflight_total = 0
     portable_paths = set()
+    # Do not accept a NEW file identity at packaging time as the baseline:
+    # a formerly clean dotenv example could gain secrets after inspection.
+    preflight_identities = {}
     for source_path in paths:
         name = source_path.relative_to(source_root).as_posix()
         components = name.split("/")
@@ -162,18 +199,45 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
         # Fail before creating the temporary archive. Keep the same checks
         # in the packaging loop to detect a later swap of the staged member.
         allowed_templates = {".env.example", ".env.production.example"}
-        for part in source_path.relative_to(source_root).parts:
+        for index, part in enumerate(components):
             folded = part.casefold()
+            # XDG Git configuration can embed plaintext credentials and HTTP tokens.
+            if index > 0 and components[index - 1].casefold() == ".config" and folded in {"gcloud", "gh", "git"}:
+                raise SetupBuildError(f"Credential storage in Setup staging: {name}")
             if folded == ".git":
                 raise SetupBuildError(f"Source control metadata in Setup staging: {name}")
+            if folded in CREDENTIAL_STORAGE_PARTS:
+                raise SetupBuildError(f"Credential storage in Setup staging: {name}")
             if folded in ("auth.json", ".npmrc", ".netrc", ".pypirc", ".yarnrc.yml"):
                 raise SetupBuildError(f"Package manager credentials in Setup staging: {name}")
+            if _is_sensitive_private_file(folded):
+                raise SetupBuildError(f"Private key or service credentials in Setup staging: {name}")
             if folded == ".env" or (folded.startswith(".env.") and folded not in allowed_templates):
                 raise SetupBuildError(f"Secret environment configuration in Setup staging: {name}")
         # The verifier rejects runtime data, but that is too late if the
         # builder has already serialized credentials or customer uploads to
         # a temporary ZIP. Empty Laravel storage/cache directories are safe.
         folded_parts = tuple(part.casefold() for part in source_path.relative_to(source_root).parts)
+        # Public static assets must not carry executable scripts or alternate
+        # server configuration from a dirty deployment staging checkout.
+        # Keep the canonical Laravel front controller and root .htaccess.
+        public_asset = (
+            folded_parts[:2] == ("backend", "public")
+            or folded_parts[:1] == ("public",)
+            or folded_parts[:1] in (("assets",), ("brand",), ("demo",), ("preview",))
+        )
+        canonical_bootstrap = name in (
+            "backend/public/index.php",
+            "backend/public/.htaccess",
+            "public/index.php",
+            "public/.htaccess",
+        )
+        if public_asset and not canonical_bootstrap and any(
+            re.search(r"\.(?:php[0-9]*|phtml|phar|cgi|pl|py|sh|asp|aspx|jsp)(?:\.|$)", part, re.IGNORECASE)
+            or re.fullmatch(r"(?:\.htaccess|\.user\.ini|web\.config)(?:\..*)?", part, re.IGNORECASE)
+            for part in source_path.relative_to(source_root).parts
+        ):
+            raise SetupBuildError(f"Executable public static asset in Setup staging: {name}")
         upload_roots = (
             ("backend", "public", "storage"),
             ("backend", "public", "uploads"),
@@ -216,6 +280,7 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
             preflight_total += source_meta.st_size
             if preflight_total > MAX_TOTAL_SIZE:
                 raise SetupBuildError("Setup ZIP staging expanded size exceeds budget.")
+        preflight_identities[name] = _member_identity(source_meta)
 
     output.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary_name = tempfile.mkstemp(prefix=".v2-setup-", suffix=".zip", dir=output.parent)
@@ -229,7 +294,10 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
         total_size = 0
         with zipfile.ZipFile(temporary, "w", allowZip64=True) as archive:
             for path in paths:
+                name = path.relative_to(source_root).as_posix()
                 meta = path.lstat()
+                if _member_identity(meta) != preflight_identities[name]:
+                    raise SetupBuildError(f"Setup staging member changed after preflight: {name}")
                 if stat.S_ISLNK(meta.st_mode) or not (stat.S_ISDIR(meta.st_mode) or stat.S_ISREG(meta.st_mode)):
                     raise SetupBuildError(f"Unsafe non-regular Setup staging member: {path.relative_to(source_root)!s}")
                 if stat.S_ISREG(meta.st_mode) and meta.st_nlink > 1:
@@ -246,12 +314,18 @@ def build_setup_zip(source_root: Path, output: Path, source_epoch: int) -> str:
                 # downstream ZIP verifier rejects these too, but a builder
                 # must fail before publishing a secret-bearing archive.
                 allowed_templates = {".env.example", ".env.production.example"}
-                for component in path.relative_to(source_root).parts:
+                for index, component in enumerate(path.relative_to(source_root).parts):
                     folded = component.casefold()
+                    if index > 0 and path.relative_to(source_root).parts[index - 1].casefold() == ".config" and folded in {"gcloud", "gh", "git"}:
+                        raise SetupBuildError(f"Credential storage in Setup staging: {name}")
                     if folded == ".git":
                         raise SetupBuildError(f"Source control metadata in Setup staging: {name}")
+                    if folded in CREDENTIAL_STORAGE_PARTS:
+                        raise SetupBuildError(f"Credential storage in Setup staging: {name}")
                     if folded in ("auth.json", ".npmrc", ".netrc", ".pypirc", ".yarnrc.yml"):
                         raise SetupBuildError(f"Package manager credentials in Setup staging: {name}")
+                    if _is_sensitive_private_file(folded):
+                        raise SetupBuildError(f"Private key or service credentials in Setup staging: {name}")
                     if folded == ".env" or (folded.startswith(".env.") and folded not in allowed_templates):
                         raise SetupBuildError(f"Secret environment configuration in Setup staging: {name}")
                 is_dir = stat.S_ISDIR(meta.st_mode)

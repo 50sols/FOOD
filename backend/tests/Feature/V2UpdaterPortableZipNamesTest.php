@@ -172,6 +172,49 @@ final class V2UpdaterPortableZipNamesTest extends TestCase
         );
     }
 
+    public function test_signed_zip_credential_stores_are_denied_before_every_runtime_mutation(): void
+    {
+        // A checksum-valid ZIP can still contain a credential file if
+        // publisher exclusion fails. Verify, backup and extractor must agree.
+        foreach ([
+            'backend/.config/git/credentials',
+            'backend/resources/.CONFIG/GIT/config',
+            'backend/.config/gh/hosts.yml',
+            'backend/.config/gcloud/application_default_credentials.json',
+            'backend/auth.json',
+            'backend/resources/.npmrc',
+            'backend/.NETRC',
+            'backend/resources/.git-credentials',
+        ] as $relativePath) {
+            $this->assertRejectsBeforeMutation(
+                [$relativePath => 'SECRET-MUST-NOT-BE-DEPLOYED'],
+                'Update archive targets a protected credential path.',
+            );
+        }
+    }
+
+    public function test_windows_reserved_devices_and_forbidden_punctuation_fail_before_mutation(): void
+    {
+        // ZIPs with these names may be valid on Linux but collide with
+        // devices or invalid path components on Windows/shared-host tooling.
+        // Preflight, file backup and extraction must all refuse them.
+        foreach ([
+            'CONIN$',
+            'conout$.log',
+            'PrN.txt',
+            'LPT1.csv',
+            'name?query.css',
+            'name:stream.css',
+            'name|pipe.css',
+            'name*glob.css',
+        ] as $name) {
+            $this->assertRejectsBeforeMutation(
+                [$this->releaseName.'/assets/'.$name => 'UNSAFE'],
+                'Update archive contains an unsafe portable member name.',
+            );
+        }
+    }
+
     public function test_portable_distinct_zip_is_accepted_and_backup_and_rollback_are_lossless(): void
     {
         $package = $this->createArchive([

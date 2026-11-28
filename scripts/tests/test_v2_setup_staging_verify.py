@@ -160,6 +160,42 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
         result = self.verify()
         self.assertEqual("UNTRUSTED_CI_STAGING_ONLY", result["status"])
 
+    def test_setup_zip_blocks_cloud_and_client_credential_homes(self) -> None:
+        # The independent verifier must reject hostile ZIPs even if a
+        # publisher source guard is bypassed. CRC-valid members alone are
+        # never evidence that credential-home paths are safe to distribute.
+        for member in (
+            "backend/resources/admin/.aws/credentials",
+            "backend/public/assets/.AWS/config",
+            "backend/resources/admin/.ssh/id_ed25519.pub",
+            "backend/app/.docker/config.json",
+            "backend/config/.kube/config",
+            "backend/resources/admin/.gnupg/pubring.kbx",
+            "backend/public/assets/.azure/azureProfile.json",
+            "backend/resources/admin/.terraform/terraform.tfstate",
+            "backend/resources/admin/.git-credentials",
+            "backend/resources/admin/application_default_credentials.json",
+            "backend/public/assets/admin/terraform.tfstate.backup",
+            "backend/resources/admin/accessTokens.json",
+            "backend/public/assets/.config/gcloud/credentials.db",
+            "backend/resources/admin/.CONFIG/GCLOUD/credentials.db",
+            "backend/public/assets/.config/gh/hosts.yml",
+            "backend/resources/admin/.CONFIG/GH/hosts.yml",
+            "backend/public/assets/.config/git/credentials",
+            "backend/resources/admin/.CONFIG/GIT/config",
+        ):
+            with self.subTest(member=member):
+                self.pack({member: b"DO-NOT-PUBLISH-CREDENTIALS"})
+                with self.assertRaisesRegex(SetupZipError, "Credential storage"):
+                    self.verify()
+
+        # No unrelated public certificate or compiled frontend asset denial.
+        self.pack({
+            "backend/public/assets/admin/app.css": b"body { color: green; }",
+            "backend/public/assets/cacert.pem": b"PUBLIC CERTIFICATE",
+        })
+        self.assertEqual("UNTRUSTED_CI_STAGING_ONLY", self.verify()["status"])
+
     def test_package_manager_credentials_cannot_pass_setup_zip_verification(self) -> None:
         # A crafted ZIP must not bypass prepublication builder guards.
         # SHA-256 and ZIP CRC prove bytes, not the absence of credentials.
@@ -182,6 +218,32 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
         self.pack({
             "backend/composer.json": b'{"name":"foodex/erp"}',
             "backend/composer.lock": b'{"packages":[]}',
+        })
+        self.assertEqual("UNTRUSTED_CI_STAGING_ONLY", self.verify()["status"])
+
+    def test_private_credential_filenames_fail_in_independent_setup_verifier(self) -> None:
+        # A crafted CRC-valid ZIP can bypass the source builder entirely.
+        # Its validator must deny private keys and cloud credentials itself.
+        entries = (
+            "backend/config/private.key",
+            "backend/config/CLIENT.P12",
+            "backend/config/client.pfx",
+            "backend/id_ed25519",
+            "backend/config/SERVICE-ACCOUNT.JSON",
+            "backend/config/client_secret.json",
+            "backend/resources/admin/secrets.pem",
+            "backend/public/assets/PRIVATE_certificate.PEM",
+        )
+        for entry in entries:
+            with self.subTest(entry=entry):
+                self.pack({entry: b"DO-NOT-PUBLISH-PRIVATE-MATERIAL"})
+                with self.assertRaisesRegex(SetupZipError, "Private key or service credentials"):
+                    self.verify()
+
+        # Public CA bundles and *.pub files are not private signing material.
+        self.pack({
+            "backend/public/assets/cacert.pem": b"PUBLIC CA CERTIFICATE",
+            "backend/public/assets/id_ed25519.pub": b"PUBLIC SSH KEY",
         })
         self.assertEqual("UNTRUSTED_CI_STAGING_ONLY", self.verify()["status"])
 
@@ -221,6 +283,47 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
                 self.pack({entry: b"PRIVATE CUSTOMER DATA"})
                 with self.assertRaisesRegex(SetupZipError, "Runtime storage"):
                     self.verify()
+
+    def test_public_static_script_and_server_config_zip_members_fail_closed(self) -> None:
+        # ZIP verifier must reject forged members even if source-builder
+        # safeguards are bypassed. Canonical public/index.php stays valid.
+        for name in (
+            "backend/public/assets/admin/unauthorized.php",
+            "backend/public/preview/customer/hidden.php.jpg",
+            "backend/public/assets/admin/.htaccess",
+            "backend/public/assets/admin/.user.ini",
+            "backend/public/assets/admin/web.config",
+            "backend/public/js/script.phtml",
+            "backend/public/brand/dropper.phar",
+        ):
+            with self.subTest(name=name):
+                self.pack({name: b"DO-NOT-PUBLISH-EXECUTABLE"})
+                with self.assertRaisesRegex(SetupZipError, "Executable public static asset"):
+                    self.verify()
+
+        self.pack()
+        self.assertEqual("UNTRUSTED_CI_STAGING_ONLY", self.verify()["status"])
+
+    def test_public_root_mirror_drops_executable_assets_from_crafted_setup_zip(self) -> None:
+        for name in (
+            "public/assets/admin/shell.php",
+            "public/preview/customer/dropper.php.jpg",
+            "public/js/.htaccess",
+            "public/.user.ini",
+            "PUBLIC/ASSETS/admin/web.config",
+            "PUBLIC/js/hidden.PHTML",
+        ):
+            with self.subTest(name=name):
+                self.pack({name: b"DO-NOT-PUBLISH-EXECUTABLE"})
+                with self.assertRaisesRegex(SetupZipError, "Executable public static asset"):
+                    self.verify()
+
+        self.pack({
+            "public/index.php": b"<?php // bootstrap",
+            "public/.htaccess": b"RewriteEngine On",
+            "public/assets/admin/app.css": b"body {}",
+        })
+        self.assertEqual("UNTRUSTED_CI_STAGING_ONLY", self.verify()["status"])
 
     def test_public_upload_paths_and_symlink_roots_cannot_ship_in_setup(self) -> None:
         # These ZIP paths may be generated by a dirty production checkout:
@@ -338,13 +441,13 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
         # An intentionally bad CRC demonstrates Python ignores that alias.
         alternate = b"\x01" + (0).to_bytes(4, "little") + b"backend/.env.local"
         extra = (0x7075).to_bytes(2, "little") + len(alternate).to_bytes(2, "little") + alternate
-        member = zipfile.ZipInfo("backend/public/safe.php")
+        member = zipfile.ZipInfo("backend/public/safe.css")
         member.external_attr = (stat.S_IFREG | 0o644) << 16
         member.extra = extra
         with zipfile.ZipFile(self.archive, "a") as archive:
             archive.writestr(member, b"<?php // no secret")
         with zipfile.ZipFile(self.archive) as archive:
-            self.assertEqual("backend/public/safe.php", archive.getinfo(member.filename).filename)
+            self.assertEqual("backend/public/safe.css", archive.getinfo(member.filename).filename)
             self.assertIsNone(archive.testzip())
         with self.assertRaisesRegex(SetupZipError, "Ambiguous Unicode Path"):
             self.verify()
@@ -505,7 +608,7 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
         # extractor may use as backend/.env.local; Python CRC still passes.
         alias = b"\x01" + (0).to_bytes(4, "little") + b"backend/.env.local"
         extra = (0x7075).to_bytes(2, "little") + len(alias).to_bytes(2, "little") + alias
-        member = zipfile.ZipInfo("backend/public/safe-extra.php")
+        member = zipfile.ZipInfo("backend/public/safe-extra.css")
         member.external_attr = (stat.S_IFREG | 0o644) << 16
         member.extra = extra
         with zipfile.ZipFile(self.archive, "a") as archive:
@@ -526,7 +629,8 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
             self.verify()
 
     def test_safe_extra_timestamp_metadata_does_not_block_staging_zip(self) -> None:
-        member = zipfile.ZipInfo("backend/public/normal.php")
+        # A valid static asset isolates timestamp metadata from public PHP denial.
+        member = zipfile.ZipInfo("backend/public/normal.css")
         member.external_attr = (stat.S_IFREG | 0o644) << 16
         member.extra = (0x5455).to_bytes(2, "little") + (1).to_bytes(2, "little") + b"\x00"
         with zipfile.ZipFile(self.archive, "a") as archive:
@@ -572,9 +676,10 @@ class V2SetupStagingVerifierTest(unittest.TestCase):
                     self.verify()
 
     def test_regular_file_cannot_also_be_parent_directory(self) -> None:
+        # A CSS child tests file/directory collision without executable-content denial.
         self.pack({
             "backend/public/asset": b"regular file",
-            "backend/public/asset/index.php": b"<?php",
+            "backend/public/asset/index.css": b"<?php",
         })
         with self.assertRaisesRegex(SetupZipError, "path collision"):
             self.verify()

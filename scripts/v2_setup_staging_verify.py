@@ -80,6 +80,22 @@ def _require(condition: bool, message: str) -> None:
         raise SetupZipError(message)
 
 
+def _is_sensitive_private_file(name: str) -> bool:
+    """Reject conventional private credentials, not public CA or SSH .pub keys."""
+    lower = name.casefold()
+    return (
+        lower in {
+            "id_rsa", "id_ed25519", "id_ecdsa", "id_dsa",
+            "credentials.json", "client_secret.json",
+            "service-account.json", "service_account.json",
+        }
+        or lower.endswith((".key", ".p12", ".pfx"))
+        or (lower.endswith(".pem") and any(
+            marker in lower for marker in ("private", "secret")
+        ))
+    )
+
+
 def _parse_env_template(content: str) -> dict[str, list[str]]:
     """Parse every dotenv assignment so duplicate keys cannot hide secrets."""
     values: dict[str, list[str]] = {}
@@ -201,7 +217,12 @@ def _member_target(member: zipfile.ZipInfo) -> tuple[str, str, bool]:
     _require(all(part not in ("", ".", "..") for part in parts),
              f"Unsafe Setup ZIP component: {name!r}")
 
-    for part in parts:
+    for index, part in enumerate(parts):
+        # XDG Git config and credential-store files must never enter Setup ZIPs.
+        _require(
+            not (index > 0 and parts[index - 1].casefold() == ".config" and part.casefold() in {"gcloud", "gh", "git"}),
+            f"Credential storage in Setup ZIP: {name!r}",
+        )
         _require(
             part == part.rstrip(" .")
             and not any(ch in '<>:"|?*' or ord(ch) < 32 or ord(ch) == 127 for ch in part)
@@ -214,6 +235,23 @@ def _member_target(member: zipfile.ZipInfo) -> tuple[str, str, bool]:
             folded not in ("auth.json", ".npmrc", ".netrc", ".pypirc", ".yarnrc.yml"),
             f"Package manager credentials in Setup ZIP: {name!r}",
         )
+        # A dirty shared-host checkout can contain cloud auth material in
+        # hidden credential homes whose individual filenames look harmless.
+        # Validate every path segment, even for directory-only ZIP members.
+        _require(
+            folded not in {
+                ".aws", ".ssh", ".docker", ".kube", ".gnupg",
+                ".azure", ".terraform", ".git-credentials",
+                "application_default_credentials.json",
+                "azureprofile.json", "accesstokens.json",
+                "terraform.tfstate", "terraform.tfstate.backup",
+            },
+            f"Credential storage in Setup ZIP: {name!r}",
+        )
+        _require(
+            not _is_sensitive_private_file(folded),
+            f"Private key or service credentials in Setup ZIP: {name!r}",
+        )
         _require(
             not (folded == ".env" or (folded.startswith(".env.") and folded not in ALLOWED_ENV_EXAMPLES)),
             f"Secret environment configuration in Setup ZIP: {name!r}",
@@ -221,6 +259,33 @@ def _member_target(member: zipfile.ZipInfo) -> tuple[str, str, bool]:
 
     normalized = "/".join(parts)
     folded_parts = [p.casefold() for p in parts]
+    # A crafted archive must not bypass the Setup builder's public static
+    # asset policy by injecting scripts or server configuration into a
+    # web-served compiled assets tree. Only the canonical Laravel bootstrap
+    # front controller and top-level public .htaccess are exceptions.
+    public_asset = (
+        folded_parts[:2] == ["backend", "public"]
+        or folded_parts[:1] == ["public"]
+        or folded_parts[:1] in (["assets"], ["brand"], ["demo"], ["preview"])
+    )
+    bootstrap = normalized in (
+        "backend/public/index.php",
+        "backend/public/.htaccess",
+        "public/index.php",
+        "public/.htaccess",
+    )
+    _require(
+        not (
+            public_asset
+            and not bootstrap
+            and any(
+                re.search(r"\.(?:php[0-9]*|phtml|phar|cgi|pl|py|sh|asp|aspx|jsp)(?:\.|$)", part, re.IGNORECASE)
+                or re.fullmatch(r"(?:\.htaccess|\.user\.ini|web\.config)(?:\..*)?", part, re.IGNORECASE)
+                for part in parts
+            )
+        ),
+        f"Executable public static asset in Setup ZIP: {name!r}",
+    )
     # Public upload roots are live runtime data, not fresh-install source.
     # Reject the roots themselves (including directory-only ZIP members)
     # because they can shadow an installer-created public/storage symlink;

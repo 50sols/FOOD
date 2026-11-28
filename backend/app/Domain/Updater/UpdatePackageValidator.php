@@ -131,7 +131,7 @@ final class UpdatePackageValidator
                     if ($component === ''
                         || rtrim($component, ' .') !== $component
                         || preg_match('/[<>:"|?*]/', $component) === 1
-                        || preg_match('/\A(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?\z/iD', $component) === 1) {
+                        || preg_match('/\A(?:con|conin\$|conout\$|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?\z/iD', $component) === 1) {
                         throw new InvalidArgumentException('Update archive contains an unsafe portable member name.');
                     }
                 }
@@ -239,6 +239,29 @@ final class UpdatePackageValidator
         $lastIndex = array_key_last($components);
 
         foreach ($components as $index => $component) {
+            // A valid signed digest does not make an embedded credential store
+            // an acceptable release target. Match the source ZIP publisher's
+            // XDG/GitHub/Cloud CLI and package-manager secret exclusions.
+            $folded = strtolower($component);
+            if (in_array($folded, [
+                'auth.json', '.npmrc', '.netrc', '.pypirc', '.yarnrc.yml',
+                '.git-credentials', 'azureprofile.json', 'accesstokens.json',
+                'terraform.tfstate', 'terraform.tfstate.backup',
+                'application_default_credentials.json',
+                '.aws', '.ssh', '.docker', '.kube', '.gnupg', '.azure', '.terraform',
+                'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa',
+                'credentials.json', 'client_secret.json',
+                'service-account.json', 'service_account.json',
+            ], true) || str_ends_with($folded, '.key')
+                || str_ends_with($folded, '.p12')
+                || str_ends_with($folded, '.pfx')
+                || (str_ends_with($folded, '.pem')
+                    && (str_contains($folded, 'private') || str_contains($folded, 'secret')))
+                || ($index > 0 && strtolower($components[$index - 1]) === '.config'
+                && in_array($folded, ['git', 'gh', 'gcloud'], true))) {
+                throw new InvalidArgumentException('Update archive targets a protected credential path.');
+            }
+
             $isExampleTemplate = $index === $lastIndex
                 && preg_match('/^\\.env(?:\\.[A-Za-z0-9_-]+)*\\.example$/', $component) === 1;
 

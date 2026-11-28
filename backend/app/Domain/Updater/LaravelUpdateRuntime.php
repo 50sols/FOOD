@@ -933,11 +933,42 @@ final class LaravelUpdateRuntime implements UpdateRuntime
         $pathComponents = explode('/', $normalized);
         $lastComponent = array_key_last($pathComponents);
         foreach ($pathComponents as $index => $component) {
+            // A valid signed digest does not make an embedded credential store
+            // an acceptable release target. Match the source ZIP publisher's
+            // XDG/GitHub/Cloud CLI and package-manager secret exclusions.
+            $folded = strtolower($component);
+            if (in_array($folded, [
+                'auth.json', '.npmrc', '.netrc', '.pypirc', '.yarnrc.yml',
+                '.git-credentials', 'azureprofile.json', 'accesstokens.json',
+                'terraform.tfstate', 'terraform.tfstate.backup',
+                'application_default_credentials.json',
+                '.aws', '.ssh', '.docker', '.kube', '.gnupg', '.azure', '.terraform',
+                'id_rsa', 'id_ed25519', 'id_ecdsa', 'id_dsa',
+                'credentials.json', 'client_secret.json',
+                'service-account.json', 'service_account.json',
+            ], true) || str_ends_with($folded, '.key')
+                || str_ends_with($folded, '.p12')
+                || str_ends_with($folded, '.pfx')
+                || (str_ends_with($folded, '.pem')
+                    && (str_contains($folded, 'private') || str_contains($folded, 'secret')))
+                || ($index > 0 && strtolower($pathComponents[$index - 1]) === '.config'
+                && in_array($folded, ['git', 'gh', 'gcloud'], true))) {
+                throw new RuntimeException('Update archive targets a protected credential path.');
+            }
+
             // On Windows and some shared-host filesystems, trailing periods
             // or spaces in a component alias a different live path. Reject
             // them before protected-directory and symlink checks.
             if ($component === '' || str_ends_with($component, '.') || str_ends_with($component, ' ')) {
                 throw new RuntimeException('Update archive contains an unsafe path.');
+            }
+
+            // Windows shared hosts treat device names and forbidden ASCII
+            // punctuation as nonportable release targets. Match Verify
+            // Package and the ZIP producer before backup or extraction.
+            if (preg_match('/[<>:"|?*]/', $component) === 1
+                || preg_match('/\A(?:con|conin\$|conout\$|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?\z/iD', $component) === 1) {
+                throw new RuntimeException('Update archive contains an unsafe portable member name.');
             }
 
             $isExampleTemplate = $index === $lastComponent
